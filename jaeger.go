@@ -21,18 +21,31 @@ import (
 )
 
 func init() {
+	jaegerEnable := tcfg.DefaultBool(tcfg.LocalKey(JaegerEnable), false)
+
+	if jaegerEnable == false {
+		return
+	}
+
+	startJaeger()
+}
+
+func InitJaeger() error {
+	err := startJaeger()
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func startJaeger() error {
 	// init resource
 	resource, err := newResource()
 	if err != nil {
 		log.Printf("init jaeger err (new resource %v).", err)
 
-		return
-	}
-
-	jaegerEnable := tcfg.DefaultBool(tcfg.LocalKey(JaegerEnable), false)
-
-	if jaegerEnable == false {
-		return
+		return nil
 	}
 
 	// init jaeger exporter
@@ -40,7 +53,7 @@ func init() {
 	if err != nil {
 		log.Printf("init jaeger err (new jaeger exporter %v).", err)
 
-		return
+		return err
 	}
 
 	tracerProvider := tracesdk.NewTracerProvider(
@@ -51,8 +64,10 @@ func init() {
 	// set tracer provider
 	otel.SetTracerProvider(tracerProvider)
 
-	//设置context传播载体
+	// set context text map propagator
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}))
+
+	return nil
 }
 
 // newResource returns a resource describing this application.
