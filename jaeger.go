@@ -10,6 +10,9 @@ package ttrace
 
 import (
 	"log"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/choveylee/tcfg"
 	"go.opentelemetry.io/otel"
@@ -22,16 +25,20 @@ import (
 
 func init() {
 	jaegerEnable := tcfg.DefaultBool(tcfg.LocalKey(JaegerEnable), false)
-
 	if jaegerEnable == false {
 		return
 	}
 
-	startJaeger()
+	jaegerEndpoint := tcfg.DefaultString(tcfg.LocalKey(JaegerEndpoint), "")
+	if jaegerEndpoint == "" {
+		return
+	}
+
+	startJaeger(jaegerEndpoint)
 }
 
-func InitJaeger() error {
-	err := startJaeger()
+func InitJaeger(jaegerEndpoint string) error {
+	err := startJaeger(jaegerEndpoint)
 	if err != nil {
 		return err
 	}
@@ -39,19 +46,19 @@ func InitJaeger() error {
 	return nil
 }
 
-func startJaeger() error {
+func startJaeger(jaegerEndpoint string) error {
 	// init resource
 	resource, err := newResource()
 	if err != nil {
-		log.Printf("init jaeger err (new resource %v).", err)
+		log.Printf("init jaeger (%s) err (new resource %v).", jaegerEndpoint, err)
 
 		return nil
 	}
 
 	// init jaeger exporter
-	jaegerExporter, err := newJaegerExporter()
+	jaegerExporter, err := newJaegerExporter(jaegerEndpoint)
 	if err != nil {
-		log.Printf("init jaeger err (new jaeger exporter %v).", err)
+		log.Printf("init jaeger (%s) err (new jaeger exporter %v).", jaegerEndpoint, err)
 
 		return err
 	}
@@ -72,31 +79,27 @@ func startJaeger() error {
 
 // newResource returns a resource describing this application.
 func newResource() (*resource.Resource, error) {
-	appName, err := tcfg.String(AppName)
+	appName := tcfg.DefaultString(AppName, "")
+	if appName == "" {
+		_, fileName := filepath.Split(os.Args[0])
+		fileExt := filepath.Ext(os.Args[0])
+
+		appName = strings.TrimSuffix(fileName, fileExt)
+	}
+
+	r, err := resource.Merge(resource.Default(), resource.NewWithAttributes(semconv.SchemaURL, semconv.ServiceNameKey.String(appName)))
 	if err != nil {
 		return nil, err
 	}
-
-	r, err := resource.Merge(
-		resource.Default(),
-		resource.NewWithAttributes(
-			semconv.SchemaURL,
-			semconv.ServiceNameKey.String(appName)),
-	)
 
 	return r, nil
 }
 
 // newJaegerExporter returns a jaeger export otel data.
-func newJaegerExporter() (tracesdk.SpanExporter, error) {
-	jagerAddr, err := tcfg.String(JaegerEndpoint)
-	if err != nil {
-		return nil, err
-	}
-
+func newJaegerExporter(jaegerEndpoint string) (tracesdk.SpanExporter, error) {
 	exporter, err := jaeger.New(
 		jaeger.WithCollectorEndpoint(
-			jaeger.WithEndpoint(jagerAddr),
+			jaeger.WithEndpoint(jaegerEndpoint),
 		),
 	)
 	return exporter, err
