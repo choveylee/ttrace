@@ -12,11 +12,13 @@ import (
 	"context"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
 
-var Ttracer trace.Tracer
+var ttracer trace.Tracer
 
 const (
 	TracerName = "github.com/choveylee/ttrace"
@@ -24,13 +26,28 @@ const (
 
 func init() {
 	//初始化默认tracer
-	Ttracer = otel.Tracer(TracerName)
+	ttracer = otel.Tracer(TracerName)
 
+}
+
+// Trace start trace include span name, status code, tags
+func Trace(ctx context.Context, spanName string, statusCode codes.Code, tags map[string]string) context.Context {
+	ctx, span := ttracer.Start(ctx, spanName)
+
+	span.SetStatus(statusCode, "")
+
+	for key, value := range tags {
+		span.SetAttributes(attribute.Key(key).String(value))
+	}
+
+	span.End()
+
+	return ctx
 }
 
 // GetTracer get global trace
 func GetTracer() trace.Tracer {
-	return Ttracer
+	return ttracer
 }
 
 // GetSpan get span from context
