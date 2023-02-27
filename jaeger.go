@@ -19,7 +19,7 @@ import (
 	"go.opentelemetry.io/otel/exporters/jaeger"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
-	tracesdk "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/semconv/v1.12.0"
 )
 
@@ -63,9 +63,15 @@ func startJaeger(jaegerEndpoint string) error {
 		return err
 	}
 
-	tracerProvider := tracesdk.NewTracerProvider(
-		tracesdk.WithResource(resource),
-		tracesdk.WithBatcher(jaegerExporter),
+	// 采样率
+	samplingFraction := tcfg.DefaultFloat64(JaegerSamplingFraction, 0.1)
+	// 单个实例每秒最大采样请求数量
+	maxTracesPerSecond := tcfg.DefaultFloat64(JaegerMaxTracesPerSec, 1.0)
+
+	tracerProvider := trace.NewTracerProvider(
+		trace.WithBatcher(jaegerExporter),
+		trace.WithSampler(GuaranteedThroughputProbabilitySampler(samplingFraction, maxTracesPerSecond)),
+		trace.WithResource(resource),
 	)
 
 	// set tracer provider
@@ -87,7 +93,13 @@ func newResource() (*resource.Resource, error) {
 		appName = strings.TrimSuffix(fileName, fileExt)
 	}
 
-	r, err := resource.Merge(resource.Default(), resource.NewWithAttributes(semconv.SchemaURL, semconv.ServiceNameKey.String(appName)))
+	r, err := resource.Merge(
+		resource.Default(),
+		resource.NewWithAttributes(
+			semconv.SchemaURL,
+			semconv.ServiceNameKey.String(appName),
+		),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +108,7 @@ func newResource() (*resource.Resource, error) {
 }
 
 // newJaegerExporter returns a jaeger export otel data.
-func newJaegerExporter(jaegerEndpoint string) (tracesdk.SpanExporter, error) {
+func newJaegerExporter(jaegerEndpoint string) (trace.SpanExporter, error) {
 	exporter, err := jaeger.New(
 		jaeger.WithCollectorEndpoint(
 			jaeger.WithEndpoint(jaegerEndpoint),

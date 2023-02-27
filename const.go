@@ -17,6 +17,9 @@ const (
 
 	JaegerEnable   = "JAEGER_ENABLE"
 	JaegerEndpoint = "JAEGER_ENDPOINT"
+
+	JaegerSamplingFraction = "JAEGER_SAMPLING_FRACTION"
+	JaegerMaxTracesPerSec  = "JAEGER_MAX_TRACES_PER_SEC"
 )
 
 const (
