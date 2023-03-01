@@ -6,10 +6,11 @@ require (
 	github.com/choveylee/tcfg v0.0.0-20221103045314-ced0f735691a
 	github.com/gin-gonic/gin v1.9.0
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.39.0
-	go.opentelemetry.io/otel v1.13.0
+	go.opentelemetry.io/otel v1.14.0
 	go.opentelemetry.io/otel/exporters/jaeger v1.11.1
-	go.opentelemetry.io/otel/sdk v1.11.1
-	go.opentelemetry.io/otel/trace v1.13.0
+	go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.14.0
+	go.opentelemetry.io/otel/sdk v1.14.0
+	go.opentelemetry.io/otel/trace v1.14.0
 )
 
 require (

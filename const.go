@@ -8,23 +8,19 @@
 
 package ttrace
 
-import (
-	"go.opentelemetry.io/otel/codes"
-)
-
 const (
 	AppName = "APP_NAME"
 
-	JaegerEnable   = "JAEGER_ENABLE"
-	JaegerEndpoint = "JAEGER_ENDPOINT"
+	TracerMode = "TRACER_MODE"
 
-	JaegerSamplingFraction = "JAEGER_SAMPLING_FRACTION"
-	JaegerMaxTracesPerSec  = "JAEGER_MAX_TRACES_PER_SEC"
+	JaegerEndpoint = "TRACER_JAEGER_ENDPOINT"
+
+	TracerSamplingFraction = "TRACER_SAMPLING_FRACTION"
+	TracerMaxTracesPerSec  = "TRACER_MAX_TRACES_PER_SEC"
 )
 
 const (
-	StatusCodeUnset = codes.Unset
-
-	StatusCodeOk    = codes.Ok
-	StatusCodeError = codes.Error
+	TracerModeDisable = iota
+	TracerModeStdout
+	TracerModeJaeger
 )

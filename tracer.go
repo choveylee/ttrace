@@ -9,6 +9,7 @@
 package ttrace
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"github.com/choveylee/tcfg"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/jaeger"
+	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	"go.opentelemetry.io/otel/sdk/trace"
@@ -24,52 +26,59 @@ import (
 )
 
 func init() {
-	jaegerEnable := tcfg.DefaultBool(tcfg.LocalKey(JaegerEnable), false)
-	if jaegerEnable == false {
+	tracerMode := tcfg.DefaultInt(tcfg.LocalKey(TracerMode), TracerModeDisable)
+	if tracerMode != TracerModeStdout && tracerMode != TracerModeJaeger {
 		return
 	}
 
-	jaegerEndpoint := tcfg.DefaultString(tcfg.LocalKey(JaegerEndpoint), "")
-	if jaegerEndpoint == "" {
-		return
-	}
-
-	startJaeger(jaegerEndpoint)
-}
-
-func InitJaeger(jaegerEndpoint string) error {
-	err := startJaeger(jaegerEndpoint)
+	err := startTracer(tracerMode)
 	if err != nil {
-		return err
+		log.Printf("init err (start tracer %v).", err)
 	}
-
-	return nil
 }
 
-func startJaeger(jaegerEndpoint string) error {
+func startTracer(tracerMode int) error {
 	// init resource
 	resource, err := newResource()
 	if err != nil {
-		log.Printf("init jaeger (%s) err (new resource %v).", jaegerEndpoint, err)
+		log.Printf("start tracer err (new resource %v).", err)
 
 		return nil
 	}
 
-	// init jaeger exporter
-	jaegerExporter, err := newJaegerExporter(jaegerEndpoint)
-	if err != nil {
-		log.Printf("init jaeger (%s) err (new jaeger exporter %v).", jaegerEndpoint, err)
+	var tracerExporter trace.SpanExporter
 
-		return err
+	if tracerMode == TracerModeJaeger {
+		// init jaeger exporter
+		jaegerEndpoint := tcfg.DefaultString(tcfg.LocalKey(JaegerEndpoint), "")
+		if jaegerEndpoint == "" {
+			log.Printf("start tracer err (jaeger endpoint illegal).")
+
+			return fmt.Errorf("jaeger endpoint illegal")
+		}
+
+		tracerExporter, err = newJaegerExporter(jaegerEndpoint)
+		if err != nil {
+			log.Printf("start tracer (%s) err (new jaeger exporter %v).", jaegerEndpoint, err)
+
+			return err
+		}
+	} else {
+		tracerExporter, err = newStdoutExporter()
+		if err != nil {
+			log.Printf("start tracer err (new stdout exporter %v).", err)
+
+			return err
+		}
 	}
 
 	// 采样率
-	samplingFraction := tcfg.DefaultFloat64(JaegerSamplingFraction, 0.1)
+	samplingFraction := tcfg.DefaultFloat64(TracerSamplingFraction, 0.1)
 	// 单个实例每秒最大采样请求数量
-	maxTracesPerSecond := tcfg.DefaultFloat64(JaegerMaxTracesPerSec, 1.0)
+	maxTracesPerSecond := tcfg.DefaultFloat64(TracerMaxTracesPerSec, 1.0)
 
 	tracerProvider := trace.NewTracerProvider(
-		trace.WithBatcher(jaegerExporter),
+		trace.WithBatcher(tracerExporter),
 		trace.WithSampler(GuaranteedThroughputProbabilitySampler(samplingFraction, maxTracesPerSecond)),
 		trace.WithResource(resource),
 	)
@@ -114,5 +123,12 @@ func newJaegerExporter(jaegerEndpoint string) (trace.SpanExporter, error) {
 			jaeger.WithEndpoint(jaegerEndpoint),
 		),
 	)
+	return exporter, err
+}
+
+// newStdoutExporter returns a stdout export otel data.
+func newStdoutExporter() (trace.SpanExporter, error) {
+	exporter, err := stdouttrace.New(stdouttrace.WithPrettyPrint())
+
 	return exporter, err
 }
