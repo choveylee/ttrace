@@ -72,14 +72,17 @@ func startTracer(tracerMode int) error {
 		}
 	}
 
-	// 采样率
-	samplingFraction := tcfg.DefaultFloat64(TracerSamplingFraction, 0.1)
-	// 单个实例每秒最大采样请求数量
-	maxTracesPerSecond := tcfg.DefaultFloat64(TracerMaxTracesPerSec, 1.0)
+	/*
+		// 采样率
+		samplingFraction := tcfg.DefaultFloat64(TracerSamplingFraction, 0.1)
+		// 单个实例每秒最大采样请求数量
+		maxTracesPerSecond := tcfg.DefaultFloat64(TracerMaxTracesPerSec, 1.0)
+	*/
 
 	tracerProvider := trace.NewTracerProvider(
 		trace.WithBatcher(tracerExporter),
-		trace.WithSampler(GuaranteedThroughputProbabilitySampler(samplingFraction, maxTracesPerSecond)),
+		trace.WithSampler(trace.AlwaysSample()),
+		// trace.WithSampler(GuaranteedThroughputProbabilitySampler(samplingFraction, maxTracesPerSecond)),
 		trace.WithResource(resource),
 	)
 
