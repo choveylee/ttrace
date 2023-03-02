@@ -13,6 +13,7 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
@@ -27,11 +28,17 @@ const (
 func init() {
 	//初始化默认tracer
 	ttracer = otel.Tracer(TracerName)
+}
 
+func ContextWithBaggage(ctx context.Context, items string) context.Context {
+	bag, _ := baggage.Parse(items)
+	ctx = baggage.ContextWithBaggage(ctx, bag)
+
+	return ctx
 }
 
 // Trace start trace include span name, status code, tags
-func Trace(ctx context.Context, spanName string, statusCode codes.Code, tags map[string]string) context.Context {
+func Trace(ctx context.Context, spanName string, statusCode codes.Code, tags map[string]string) (context.Context, trace.Span) {
 	ctx, span := ttracer.Start(ctx, spanName)
 
 	span.SetStatus(statusCode, "")
@@ -40,9 +47,23 @@ func Trace(ctx context.Context, spanName string, statusCode codes.Code, tags map
 		span.SetAttributes(attribute.Key(key).String(value))
 	}
 
-	span.End()
+	// span.End()
 
-	return ctx
+	return ctx, span
+}
+
+func Trace2(ctx context.Context, spanName string, statusCode codes.Code, tags []attribute.KeyValue) (context.Context, trace.Span) {
+	ctx, span := ttracer.Start(ctx, spanName)
+
+	span.SetStatus(statusCode, "")
+
+	for _, tag := range tags {
+		span.SetAttributes(tag)
+	}
+
+	// span.End()
+
+	return ctx, span
 }
 
 // GetTracer get global trace
@@ -59,6 +80,11 @@ func GetSpan(ctx context.Context) trace.Span {
 // GetSpanContext get span context from context
 func GetSpanContext(ctx context.Context) trace.SpanContext {
 	return trace.SpanFromContext(ctx).SpanContext()
+}
+
+// GetBaggage get baggage from context
+func GetBaggage(ctx context.Context) baggage.Baggage {
+	return baggage.FromContext(ctx)
 }
 
 // SetTraceID set trace id to context

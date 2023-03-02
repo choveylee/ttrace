@@ -12,23 +12,14 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/propagation"
 )
 
-func WarpGinHandler(handler http.Handler, appName string) http.Handler {
+func WarpHandler(handler http.Handler, appName string) http.Handler {
 	return otelhttp.NewHandler(handler, appName)
 }
 
-func GinTrace() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		Inject(c.Request.Context(), propagation.HeaderCarrier(c.Writer.Header()))
-
-		c.Next()
-
-		if labeler, ok := otelhttp.LabelerFromContext(c.Request.Context()); ok {
-			labeler.Add(attribute.String("http.router", c.FullPath()))
-		}
-	}
+func GinTrace(appName string) gin.HandlerFunc {
+	return otelgin.Middleware(appName)
 }

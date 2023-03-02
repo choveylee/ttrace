@@ -1,8 +1,8 @@
 # ttrace
 
 ##  配置参数
-    JAEGER_ENABLE
+    TRACER_MODE  0: off  1: stdout  2: jaeger
     JAEGER_ENDPOINT 
 
-    JAEGER_SAMPLING_FRACTION  采样率
-    JAEGER_MAX_TRACES_PER_SEC  单个实例每秒最大采样请求数量
+    TRACER_SAMPLING_FRACTION  采样率
+    TRACER_MAX_TRACES_PER_SEC  单个实例每秒最大采样请求数量

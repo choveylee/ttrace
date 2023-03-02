@@ -9,6 +9,7 @@
 package ttrace
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -22,7 +23,11 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	"go.opentelemetry.io/otel/sdk/trace"
-	"go.opentelemetry.io/otel/semconv/v1.12.0"
+	"go.opentelemetry.io/otel/semconv/v1.17.0"
+)
+
+var (
+	tracerProvider *trace.TracerProvider
 )
 
 func init() {
@@ -35,6 +40,21 @@ func init() {
 	if err != nil {
 		log.Printf("init err (start tracer %v).", err)
 	}
+}
+
+func GetTracerProvider() *trace.TracerProvider {
+	return tracerProvider
+}
+
+func Shutdown() error {
+	err := tracerProvider.Shutdown(context.Background())
+	if err != nil {
+		log.Printf("shut down err (%v).", err)
+
+		return err
+	}
+
+	return nil
 }
 
 func startTracer(tracerMode int) error {
@@ -72,17 +92,20 @@ func startTracer(tracerMode int) error {
 		}
 	}
 
-	/*
-		// 采样率
-		samplingFraction := tcfg.DefaultFloat64(TracerSamplingFraction, 0.1)
-		// 单个实例每秒最大采样请求数量
-		maxTracesPerSecond := tcfg.DefaultFloat64(TracerMaxTracesPerSec, 1.0)
-	*/
+	sampler := trace.AlwaysSample()
 
-	tracerProvider := trace.NewTracerProvider(
+	// 采样率
+	samplingFraction := tcfg.DefaultFloat64(tcfg.LocalKey(TracerSamplingFraction), 0.1)
+	// 单个实例每秒最大采样请求数量
+	maxTracesPerSecond := tcfg.DefaultFloat64(tcfg.LocalKey(TracerMaxTracesPerSec), 1.0)
+
+	if samplingFraction != -1 && maxTracesPerSecond != -1 {
+		sampler = GuaranteedThroughputProbabilitySampler(samplingFraction, maxTracesPerSecond)
+	}
+
+	tracerProvider = trace.NewTracerProvider(
 		trace.WithBatcher(tracerExporter),
-		trace.WithSampler(trace.AlwaysSample()),
-		// trace.WithSampler(GuaranteedThroughputProbabilitySampler(samplingFraction, maxTracesPerSecond)),
+		trace.WithSampler(sampler),
 		trace.WithResource(resource),
 	)
 
@@ -90,7 +113,7 @@ func startTracer(tracerMode int) error {
 	otel.SetTracerProvider(tracerProvider)
 
 	// set context text map propagator
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}))
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
 
 	return nil
 }
