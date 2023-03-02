@@ -32,9 +32,6 @@ var (
 
 func init() {
 	tracerMode := tcfg.DefaultInt(tcfg.LocalKey(TracerMode), TracerModeDisable)
-	if tracerMode != TracerModeStdout && tracerMode != TracerModeJaeger {
-		return
-	}
 
 	err := startTracer(tracerMode)
 	if err != nil {
@@ -70,7 +67,15 @@ func startTracer(tracerMode int) error {
 
 	var tracerExporter trace.SpanExporter
 
-	if tracerMode == TracerModeJaeger {
+	if tracerMode == TracerModeStdout {
+		// init stdout exporter
+		tracerExporter, err = newStdoutExporter()
+		if err != nil {
+			log.Printf("start tracer err (new stdout exporter %v).", err)
+
+			return err
+		}
+	} else if tracerMode == TracerModeJaeger {
 		// init jaeger exporter
 		jaegerEndpoint := tcfg.DefaultString(tcfg.LocalKey(JaegerEndpoint), "")
 		if jaegerEndpoint == "" {
@@ -82,13 +87,6 @@ func startTracer(tracerMode int) error {
 		tracerExporter, err = newJaegerExporter(jaegerEndpoint)
 		if err != nil {
 			log.Printf("start tracer (%s) err (new jaeger exporter %v).", jaegerEndpoint, err)
-
-			return err
-		}
-	} else {
-		tracerExporter, err = newStdoutExporter()
-		if err != nil {
-			log.Printf("start tracer err (new stdout exporter %v).", err)
 
 			return err
 		}
@@ -106,7 +104,11 @@ func startTracer(tracerMode int) error {
 	}
 
 	tracerProvider = trace.NewTracerProvider(
-		trace.WithBatcher(tracerExporter),
+		trace.WithBatcher(
+			tracerExporter,
+			// trace.WithMaxExportBatchSize(maxExportBatchSize),
+			// trace.WithBatchTimeout(exportBatchCron),
+		),
 		trace.WithSampler(sampler),
 		trace.WithResource(resource),
 	)
