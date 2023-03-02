@@ -47,11 +47,13 @@ func GetTracerProvider() *trace.TracerProvider {
 }
 
 func Shutdown() error {
-	err := tracerProvider.Shutdown(context.Background())
-	if err != nil {
-		log.Printf("shut down err (%v).", err)
+	if tracerProvider != nil {
+		err := tracerProvider.Shutdown(context.Background())
+		if err != nil {
+			log.Printf("shut down err (%v).", err)
 
-		return err
+			return err
+		}
 	}
 
 	return nil
