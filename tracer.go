@@ -18,7 +18,8 @@ import (
 
 	"github.com/choveylee/tcfg"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/jaeger"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -31,9 +32,11 @@ var (
 )
 
 func init() {
+	ctx := context.Background()
+
 	tracerMode := tcfg.DefaultInt(tcfg.LocalKey(TracerMode), TracerModeDisable)
 
-	err := startTracer(tracerMode)
+	err := startTracer(ctx, tracerMode)
 	if err != nil {
 		log.Printf("init err (start tracer %v).", err)
 	}
@@ -56,7 +59,7 @@ func Shutdown() error {
 	return nil
 }
 
-func startTracer(tracerMode int) error {
+func startTracer(ctx context.Context, tracerMode int) error {
 	// init resource
 	resource, err := newResource()
 	if err != nil {
@@ -84,7 +87,7 @@ func startTracer(tracerMode int) error {
 			return fmt.Errorf("jaeger endpoint illegal")
 		}
 
-		tracerExporter, err = newJaegerExporter(jaegerEndpoint)
+		tracerExporter, err = newTraceExporter(ctx, jaegerEndpoint)
 		if err != nil {
 			log.Printf("start tracer (%s) err (new jaeger exporter %v).", jaegerEndpoint, err)
 
@@ -146,13 +149,18 @@ func newResource() (*resource.Resource, error) {
 	return r, nil
 }
 
-// newJaegerExporter returns a jaeger export otel data.
-func newJaegerExporter(jaegerEndpoint string) (trace.SpanExporter, error) {
-	exporter, err := jaeger.New(
-		jaeger.WithCollectorEndpoint(
-			jaeger.WithEndpoint(jaegerEndpoint),
-		),
+// newTraceExporter returns a trace exporter.
+func newTraceExporter(ctx context.Context, jaegerEndpoint string) (*otlptrace.Exporter, error) {
+	client := otlptracehttp.NewClient(
+		otlptracehttp.WithInsecure(),
+		otlptracehttp.WithEndpoint(jaegerEndpoint),
 	)
+
+	exporter, err := otlptrace.New(ctx, client)
+	if err != nil {
+		return nil, err
+	}
+
 	return exporter, err
 }
 
