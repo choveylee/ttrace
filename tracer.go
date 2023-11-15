@@ -135,16 +135,10 @@ func newResource() (*resource.Resource, error) {
 		appName = strings.TrimSuffix(fileName, fileExt)
 	}
 
-	r, err := resource.Merge(
-		resource.Default(),
-		resource.NewWithAttributes(
-			semconv.SchemaURL,
-			semconv.ServiceNameKey.String(appName),
-		),
+	r := resource.NewWithAttributes(
+		semconv.SchemaURL,
+		semconv.ServiceNameKey.String(appName),
 	)
-	if err != nil {
-		return nil, err
-	}
 
 	return r, nil
 }
