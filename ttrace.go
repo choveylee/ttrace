@@ -12,9 +12,7 @@ import (
 	"context"
 
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/baggage"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -37,31 +35,9 @@ func ContextWithBaggage(ctx context.Context, items string) context.Context {
 	return ctx
 }
 
-// Trace start trace include span name, status code, tags
-func Trace(ctx context.Context, spanName string, statusCode codes.Code, tags map[string]string) (context.Context, trace.Span) {
+// Start start trace include span name, opts
+func Start(ctx context.Context, spanName string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
 	ctx, span := ttracer.Start(ctx, spanName)
-
-	span.SetStatus(statusCode, "")
-
-	for key, value := range tags {
-		span.SetAttributes(attribute.Key(key).String(value))
-	}
-
-	// span.End()
-
-	return ctx, span
-}
-
-func Trace2(ctx context.Context, spanName string, statusCode codes.Code, tags []attribute.KeyValue) (context.Context, trace.Span) {
-	ctx, span := ttracer.Start(ctx, spanName)
-
-	span.SetStatus(statusCode, "")
-
-	for _, tag := range tags {
-		span.SetAttributes(tag)
-	}
-
-	// span.End()
 
 	return ctx, span
 }
