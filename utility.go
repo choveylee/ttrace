@@ -22,6 +22,30 @@ func init() {
 	rand.NewSource(time.Now().UnixNano())
 }
 
+func InjectContext(ctx context.Context) (context.Context, error) {
+	traceId := NewTraceId()
+	spanId := NewSpanId()
+
+	var desTraceId [16]byte
+	var desSpanId [8]byte
+
+	span := trace.SpanFromContext(ctx)
+
+	for i := 0; i < 16; i++ {
+		desTraceId[i] = traceId[i]
+	}
+
+	for i := 0; i < 8; i++ {
+		desSpanId[i] = spanId[i]
+	}
+
+	spanContext := span.SpanContext().WithTraceID(desTraceId).WithSpanID(desSpanId)
+
+	ctx = trace.ContextWithSpanContext(ctx, spanContext)
+
+	return ctx, nil
+}
+
 func InjectTrace(ctx context.Context, traceId, spanId string) (context.Context, error) {
 	srcTraceId, err := hex.DecodeString(traceId)
 	if err != nil {
