@@ -21,8 +21,9 @@ import (
 //
 // # TODO (breaking change) remove this interface in favor of public struct below
 //
-// Deprecated, use ReconfigurableRateLimiter.
+// Deprecated: use ReconfigurableRateLimiter.
 type RateLimiter interface {
+	// CheckCredit reports whether one unit (or itemCost credits) may pass the limiter.
 	CheckCredit(itemCost float64) bool
 }
 
@@ -62,8 +63,8 @@ func NewRateLimiter(creditsPerSecond, maxBalance float64) *ReconfigurableRateLim
 	}
 }
 
-// CheckCredit tries to reduce the current balance by itemCost provided that the current balance
-// is not lest than itemCost.
+// CheckCredit tries to consume itemCost credits from the bucket. It returns true if the purchase
+// succeeds (balance was refilled as needed and remains non-negative after deducting itemCost).
 func (rl *ReconfigurableRateLimiter) CheckCredit(itemCost float64) bool {
 	rl.lock.Lock()
 	defer rl.lock.Unlock()
@@ -104,20 +105,22 @@ func (rl *ReconfigurableRateLimiter) Update(creditsPerSecond, maxBalance float64
 	defer rl.lock.Unlock()
 
 	rl.updateBalance() // get up to date balance
-	rl.balance = rl.balance * maxBalance / rl.maxBalance
+	if rl.maxBalance > 0 {
+		rl.balance = rl.balance * maxBalance / rl.maxBalance
+	} else {
+		rl.balance = maxBalance
+	}
 	rl.creditsPerSecond = creditsPerSecond
 	rl.maxBalance = maxBalance
 }
 
-// rateLimitingSampler samples at most maxTracesPerSecond. The distribution of sampled traces follows
-// burstiness of the service, i.e. a service with uniformly distributed requests will have those
-// requests sampled uniformly as well, but if requests are bursty, especially sub-second, then a
-// number of sequential requests can be sampled each second.
+// rateLimitingSampler enforces an upper bound on trace decisions per second using a ReconfigurableRateLimiter.
 type rateLimitingSampler struct {
 	maxTracesPerSecond float64
 	rateLimiter        *ReconfigurableRateLimiter
 }
 
+// init (re)configures the embedded rate limiter for maxTracesPerSecond and updates s.maxTracesPerSecond.
 func (s *rateLimitingSampler) init(maxTracesPerSecond float64) *rateLimitingSampler {
 	if s.rateLimiter == nil {
 		s.rateLimiter = NewRateLimiter(maxTracesPerSecond, math.Max(maxTracesPerSecond, 1.0))
@@ -128,11 +131,12 @@ func (s *rateLimitingSampler) init(maxTracesPerSecond float64) *rateLimitingSamp
 	return s
 }
 
-// Description is used to log sampler details.
+// Description returns a short label including the configured max traces per second.
 func (s *rateLimitingSampler) Description() string {
 	return fmt.Sprintf("rateLimitingSampler(maxTracesPerSecond=%v)", s.maxTracesPerSecond)
 }
 
+// ShouldSample permits the span if the rate limiter grants one credit for this trace decision.
 func (s *rateLimitingSampler) ShouldSample(p trace.SamplingParameters) trace.SamplingResult {
 	if s.rateLimiter.CheckCredit(1.0) {
 		return trace.SamplingResult{Decision: trace.RecordAndSample}
@@ -140,17 +144,22 @@ func (s *rateLimitingSampler) ShouldSample(p trace.SamplingParameters) trace.Sam
 	return trace.SamplingResult{Decision: trace.Drop}
 }
 
-// RateLimitingSampler creates new rateLimitingSampler.
+// RateLimitingSampler returns a [trace.Sampler] that records at most about maxTracesPerSecond traces per second
+// using a leaky-bucket rate limiter.
 func RateLimitingSampler(maxTracesPerSecond float64) trace.Sampler {
 	s := new(rateLimitingSampler)
 	return s.init(maxTracesPerSecond)
 }
 
+// guaranteedThroughputProbabilitySampler composes a ratio-based sampler and a rate-limiting sampler.
 type guaranteedThroughputProbabilitySampler struct {
 	probabilitySampler  trace.Sampler
 	rateLimitingSampler trace.Sampler
 }
 
+// GuaranteedThroughputProbabilitySampler first applies probabilistic sampling using trace.TraceIDRatioBased
+// with the given fraction. If that decision is RecordAndSample, it then applies [RateLimitingSampler] with
+// maxTracesPerSecond so overall throughput remains bounded.
 func GuaranteedThroughputProbabilitySampler(fraction float64, maxTracesPerSecond float64) trace.Sampler {
 	return &guaranteedThroughputProbabilitySampler{
 		probabilitySampler:  trace.TraceIDRatioBased(fraction),
@@ -158,6 +167,7 @@ func GuaranteedThroughputProbabilitySampler(fraction float64, maxTracesPerSecond
 	}
 }
 
+// ShouldSample returns Drop if the ratio sampler drops; otherwise it returns the rate limiter's decision.
 func (s guaranteedThroughputProbabilitySampler) ShouldSample(p trace.SamplingParameters) trace.SamplingResult {
 	samplingResult := s.probabilitySampler.ShouldSample(p)
 	if samplingResult.Decision == trace.Drop {
@@ -167,6 +177,7 @@ func (s guaranteedThroughputProbabilitySampler) ShouldSample(p trace.SamplingPar
 	return s.rateLimitingSampler.ShouldSample(p)
 }
 
+// Description returns a static name for logging and debugging.
 func (s guaranteedThroughputProbabilitySampler) Description() string {
 	return "GuaranteedThroughputProbabilitySampler"
 }

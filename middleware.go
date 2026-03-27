@@ -16,10 +16,12 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
-func WarpHandler(handler http.Handler, appName string) http.Handler {
+// WrapHandler returns an [http.Handler] that instruments handler with OpenTelemetry HTTP tracing using appName as the span name prefix.
+func WrapHandler(handler http.Handler, appName string) http.Handler {
 	return otelhttp.NewHandler(handler, appName)
 }
 
+// GinTrace returns Gin middleware that creates server spans and propagates trace context (otelgin).
 func GinTrace(appName string) gin.HandlerFunc {
 	return otelgin.Middleware(appName)
 }

@@ -10,101 +10,139 @@ package ttrace
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"math/rand"
-	"time"
 
 	"go.opentelemetry.io/otel/trace"
 )
 
-func init() {
-	rand.NewSource(time.Now().UnixNano())
-}
-
+// InjectContext generates new trace and span IDs via [NewTraceId] and [NewSpanId], then calls [InjectTrace].
+// It returns the input ctx unchanged if ID generation fails.
 func InjectContext(ctx context.Context) (context.Context, error) {
-	traceId := NewTraceId()
-	spanId := NewSpanId()
-
-	var desTraceId [16]byte
-	var desSpanId [8]byte
-
-	span := trace.SpanFromContext(ctx)
-
-	for i := 0; i < 16; i++ {
-		desTraceId[i] = traceId[i]
+	traceId, err := NewTraceId()
+	if err != nil {
+		return ctx, err
 	}
 
-	for i := 0; i < 8; i++ {
-		desSpanId[i] = spanId[i]
+	spanId, err := NewSpanId()
+	if err != nil {
+		return ctx, err
 	}
 
-	spanContext := span.SpanContext().WithTraceID(desTraceId).WithSpanID(desSpanId)
-
-	ctx = trace.ContextWithSpanContext(ctx, spanContext)
-
-	return ctx, nil
+	return InjectTrace(ctx, traceId, spanId)
 }
 
-func InjectTrace(ctx context.Context, traceId, spanId string) (context.Context, error) {
-	srcTraceId, err := hex.DecodeString(traceId)
+// InjectTrace decodes hex trace id (32 chars) and span id (16 chars) into the context.
+// When ctx has no valid SpanContext, it behaves like a local root (Remote=false, sampled).
+// For ids and sampling copied from an inbound W3C traceparent header, use [InjectRemoteTrace]
+// or, preferably, [ExtractHTTP] so tracestate and flags stay aligned with the wire format.
+func InjectTrace(ctx context.Context, strTraceId, strSpanId string) (context.Context, error) {
+	srcTraceId, err := hex.DecodeString(strTraceId)
 	if err != nil {
-		return nil, err
+		return ctx, err
 	}
 
 	if len(srcTraceId) != 16 {
-		return nil, fmt.Errorf("trace id illegal")
+		return ctx, fmt.Errorf("trace id illegal")
 	}
 
-	srcSpanId, err := hex.DecodeString(spanId)
+	srcSpanId, err := hex.DecodeString(strSpanId)
 	if err != nil {
-		return nil, err
+		return ctx, err
 	}
 
 	if len(srcSpanId) != 8 {
-		return nil, fmt.Errorf("span id illegal")
+		return ctx, fmt.Errorf("span id illegal")
 	}
 
 	var desTraceId [16]byte
 	var desSpanId [8]byte
 
-	span := trace.SpanFromContext(ctx)
+	copy(desTraceId[:], srcTraceId)
+	copy(desSpanId[:], srcSpanId)
 
-	for i := 0; i < 16; i++ {
-		desTraceId[i] = srcTraceId[i]
-	}
+	traceId := trace.TraceID(desTraceId)
+	spanId := trace.SpanID(desSpanId)
 
-	for i := 0; i < 8; i++ {
-		desSpanId[i] = srcSpanId[i]
-	}
+	preSpanContext := trace.SpanFromContext(ctx).SpanContext()
 
-	spanContext := span.SpanContext().WithTraceID(desTraceId).WithSpanID(desSpanId)
+	spanContext := spanContextWithTraceAndSpan(preSpanContext, traceId, spanId)
 
 	ctx = trace.ContextWithSpanContext(ctx, spanContext)
 
 	return ctx, nil
 }
 
-func NewTraceId() string {
-	bytesInit := []byte("0123456789abcdef")
-
-	data := make([]byte, 0)
-
-	for i := 0; i < 32; i++ {
-		data = append(data, bytesInit[rand.Intn(len(bytesInit))])
+// InjectRemoteTrace sets trace id and parent span id from hex strings, as when reconstructing
+// W3C trace context without full header parsing. sampled should match the trace-flags sampled bit.
+// The SpanContext is marked Remote=true (upstream / cross-service). If you have raw HTTP headers,
+// use [ExtractHTTP] instead to also recover tracestate and avoid manual flag handling.
+func InjectRemoteTrace(ctx context.Context, strTraceId, strParentSpanId string, sampled bool) (context.Context, error) {
+	srcTraceId, err := hex.DecodeString(strTraceId)
+	if err != nil {
+		return ctx, err
 	}
 
-	return string(data)
+	if len(srcTraceId) != 16 {
+		return ctx, fmt.Errorf("trace id illegal")
+	}
+
+	srcSpanId, err := hex.DecodeString(strParentSpanId)
+	if err != nil {
+		return ctx, err
+	}
+
+	if len(srcSpanId) != 8 {
+		return ctx, fmt.Errorf("span id illegal")
+	}
+
+	var desTraceId [16]byte
+	var desSpanId [8]byte
+
+	copy(desTraceId[:], srcTraceId)
+	copy(desSpanId[:], srcSpanId)
+
+	traceId := trace.TraceID(desTraceId)
+	spanId := trace.SpanID(desSpanId)
+
+	flags := trace.TraceFlags(0)
+	if sampled {
+		flags = trace.FlagsSampled
+	}
+
+	spanContext := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: traceId,
+		SpanID:  spanId,
+
+		TraceFlags: flags,
+
+		Remote: true,
+	})
+
+	return trace.ContextWithSpanContext(ctx, spanContext), nil
 }
 
-func NewSpanId() string {
-	bytesInit := []byte("0123456789abcdef")
+// NewTraceId returns a new W3C trace id as a 32-character lowercase hex string (16 bytes).
+func NewTraceId() (string, error) {
+	var bytes [16]byte
 
-	data := make([]byte, 0)
-
-	for i := 0; i < 16; i++ {
-		data = append(data, bytesInit[rand.Intn(len(bytesInit))])
+	_, err := rand.Read(bytes[:])
+	if err != nil {
+		return "", fmt.Errorf("ttrace: crypto/rand trace id: %w", err)
 	}
 
-	return string(data)
+	return hex.EncodeToString(bytes[:]), nil
+}
+
+// NewSpanId returns a new span id as a 16-character lowercase hex string (8 bytes).
+func NewSpanId() (string, error) {
+	var bytes [8]byte
+
+	_, err := rand.Read(bytes[:])
+	if err != nil {
+		return "", fmt.Errorf("ttrace: crypto/rand span id: %w", err)
+	}
+
+	return hex.EncodeToString(bytes[:]), nil
 }
