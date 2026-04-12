@@ -1,11 +1,3 @@
-/**
- * @Author: lidonglin
- * @Description: OpenTelemetry TracerProvider setup (noop, stdout, OTLP), resource attributes, propagator.
- * @File: tracer.go
- * @Version: 1.0.0
- * @Date: 2022/11/03 15:46
- */
-
 package ttrace
 
 import (
@@ -33,8 +25,8 @@ var (
 	tracerProvider *sdktrace.TracerProvider
 )
 
-// init reads tracer configuration, starts the SDK or noop provider, and on failure falls back to
-// noop tracing via [installNoopTracing].
+// init loads tracer configuration from tcfg, starts the SDK or a noop TracerProvider, and on
+// failure invokes installNoopTracing to continue with noop tracing.
 func init() {
 	ctx := context.Background()
 
@@ -51,13 +43,14 @@ func init() {
 	}
 }
 
-// GetTracerProvider returns the package-level SDK TracerProvider after successful stdout or OTLP
-// startup, or nil when tracing is disabled or the noop fallback is active.
+// GetTracerProvider returns the package-level [*sdktrace.TracerProvider] after successful stdout or
+// OTLP startup. It returns nil when tracing is disabled or the noop fallback is active.
 func GetTracerProvider() *sdktrace.TracerProvider {
 	return tracerProvider
 }
 
-// Shutdown flushes and shuts down the SDK TracerProvider when [GetTracerProvider] is non-nil.
+// Shutdown flushes and shuts down the SDK TracerProvider returned by [GetTracerProvider] when that
+// value is non-nil.
 func Shutdown() error {
 	if tracerProvider != nil {
 		err := tracerProvider.Shutdown(context.Background())
@@ -71,8 +64,9 @@ func Shutdown() error {
 	return nil
 }
 
-// startTracer builds resource, exporter, sampler, and sets the global TracerProvider for stdout or OTLP.
-// Disabled or unknown modes invoke [installNoopTracing]. Returns an error if resource or exporter setup fails.
+// startTracer constructs the resource, span exporter, and sampler, then installs the global
+// TracerProvider for stdout or OTLP export. Disabled or unknown modes delegate to
+// [installNoopTracing]. It returns an error if resource or exporter construction fails.
 func startTracer(ctx context.Context, tracerMode int) error {
 	if tracerMode != TracerModeStdout && tracerMode != TracerModeOTLP {
 		if tracerMode != TracerModeDisable {
@@ -135,8 +129,8 @@ func startTracer(ctx context.Context, tracerMode int) error {
 	return nil
 }
 
-// installNoopTracing sets a noop global TracerProvider, clears the SDK pointer, and reinstalls
-// propagators so context extraction and injection still work without exporting spans.
+// installNoopTracing registers a noop global TracerProvider, clears the SDK provider pointer, and
+// reinstalls propagators so context propagation continues to function without exporting spans.
 func installNoopTracing() error {
 	tracerProvider = nil
 
@@ -146,13 +140,13 @@ func installNoopTracing() error {
 	return nil
 }
 
-// installPropagator sets the global TextMapPropagator to W3C Trace Context and W3C Baggage.
+// installPropagator sets the global TextMapPropagator to a composite of W3C Trace Context and W3C Baggage.
 func installPropagator() {
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
 }
 
-// newResource constructs a [resource.Resource] with service.name and optional attributes from tcfg
-// keys such as [ServiceVersion] and [DeploymentEnvironmentName].
+// newResource builds a [resource.Resource] with service.name and optional attributes derived from
+// tcfg keys including [ServiceVersion] and [DeploymentEnvironmentName].
 func newResource() (*resource.Resource, error) {
 	appName := tcfg.DefaultString(AppName, "")
 	if appName == "" {
@@ -189,7 +183,7 @@ func newResource() (*resource.Resource, error) {
 	return r, nil
 }
 
-// newTraceExporter returns an OTLP/HTTP trace exporter for endpoint (host:port; insecure client).
+// newTraceExporter creates an OTLP/HTTP trace exporter for endpoint (host:port) using an insecure client.
 func newTraceExporter(ctx context.Context, endpoint string) (*otlptrace.Exporter, error) {
 	client := otlptracehttp.NewClient(
 		otlptracehttp.WithInsecure(),
@@ -204,7 +198,7 @@ func newTraceExporter(ctx context.Context, endpoint string) (*otlptrace.Exporter
 	return exporter, err
 }
 
-// newStdoutExporter returns a stdout span exporter with pretty-printed OTLP-style output.
+// newStdoutExporter constructs a stdout span exporter that prints OTLP-style span data with pretty formatting.
 func newStdoutExporter() (sdktrace.SpanExporter, error) {
 	exporter, err := stdouttrace.New(stdouttrace.WithPrettyPrint())
 

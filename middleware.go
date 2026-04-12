@@ -1,11 +1,3 @@
-/**
- * @Author: lidonglin
- * @Description:
- * @File:  middleware.go
- * @Version: 1.0.0
- * @Date: 2023/02/27 13:59
- */
-
 package ttrace
 
 import (
@@ -14,8 +6,8 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
-// WrapHandler wraps handler with [go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp];
-// appName is used as the span name prefix.
+// WrapHandler returns handler instrumented with [go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp].
+// The appName argument is used as the instrumentation scope and span name prefix.
 func WrapHandler(handler http.Handler, appName string) http.Handler {
 	return otelhttp.NewHandler(handler, appName)
 }

@@ -1,40 +1,32 @@
-/**
- * @Author: lidonglin
- * @Description:
- * @File:  const.go
- * @Version: 1.0.0
- * @Date: 2022/11/03 14:00
- */
-
 package ttrace
 
-// Configuration keys for [github.com/choveylee/tcfg] (commonly backed by environment variables).
+// Configuration key names for [github.com/choveylee/tcfg], typically supplied via environment variables.
 const (
-	// AppName sets service.name; if unset, the executable base name is used.
+	// AppName is the tcfg key for OpenTelemetry service.name; when unset, the executable base name is used.
 	AppName = "APP_NAME"
 
-	// ServiceVersion maps to OpenTelemetry service.version (optional).
+	// ServiceVersion is the tcfg key for OpenTelemetry service.version (optional).
 	ServiceVersion = "SERVICE_VERSION"
-	// ServiceNamespace maps to service.namespace (optional; e.g. Kubernetes namespace).
+	// ServiceNamespace is the tcfg key for service.namespace (optional), for example a Kubernetes namespace.
 	ServiceNamespace = "SERVICE_NAMESPACE"
-	// ServiceInstanceID maps to service.instance.id (optional).
+	// ServiceInstanceID is the tcfg key for service.instance.id (optional).
 	ServiceInstanceID = "SERVICE_INSTANCE_ID"
-	// DeploymentEnvironmentName maps to deployment.environment.name (optional).
+	// DeploymentEnvironmentName is the tcfg key for deployment.environment.name (optional).
 	DeploymentEnvironmentName = "DEPLOYMENT_ENVIRONMENT_NAME"
 
-	// TracerMode selects exporter mode; values are [TracerModeDisable], [TracerModeStdout], [TracerModeOTLP].
+	// TracerMode is the tcfg key that selects the trace exporter; valid values are [TracerModeDisable], [TracerModeStdout], and [TracerModeOTLP].
 	TracerMode = "TRACER_MODE"
 
-	// OTLPEndpoint is the OTLP/HTTP trace endpoint (host:port) when TracerMode is [TracerModeOTLP].
+	// OTLPEndpoint is the tcfg key for the OTLP/HTTP trace endpoint (host:port) when [TracerMode] is [TracerModeOTLP].
 	OTLPEndpoint = "TRACER_OTLP_ENDPOINT"
 
-	// TracerSamplingFraction is the trace ID ratio for [GuaranteedThroughputProbabilitySampler].
+	// TracerSamplingFraction is the tcfg key for the trace ID sampling ratio passed to [GuaranteedThroughputProbabilitySampler].
 	TracerSamplingFraction = "TRACER_SAMPLING_FRACTION"
-	// TracerMaxTracesPerSec caps throughput after the ratio stage (traces per second).
+	// TracerMaxTracesPerSec is the tcfg key for the per-second trace cap after ratio sampling.
 	TracerMaxTracesPerSec = "TRACER_MAX_TRACES_PER_SEC"
 )
 
-// Tracer mode values for [TracerMode] / TRACER_MODE.
+// Numeric values for the [TracerMode] configuration key (environment variable TRACER_MODE).
 const (
 	TracerModeDisable = iota
 	TracerModeStdout

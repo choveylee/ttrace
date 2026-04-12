@@ -1,11 +1,3 @@
-/**
- * @Author: lidonglin
- * @Description:
- * @File:  utility.go
- * @Version: 1.0.0
- * @Date: 2023/11/14 09:34
- */
-
 package ttrace
 
 import (
@@ -17,8 +9,8 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// InjectContext generates trace and span IDs with [NewTraceId] and [NewSpanId], then applies [InjectTrace].
-// On ID generation failure it returns ctx and the error from those helpers.
+// InjectContext generates new trace and span identifiers with [NewTraceId] and [NewSpanId], then
+// applies [InjectTrace]. On failure it returns ctx and the error from ID generation.
 func InjectContext(ctx context.Context) (context.Context, error) {
 	traceId, err := NewTraceId()
 	if err != nil {
@@ -33,10 +25,11 @@ func InjectContext(ctx context.Context) (context.Context, error) {
 	return InjectTrace(ctx, traceId, spanId)
 }
 
-// InjectTrace decodes hex strings into trace and span IDs and stores them in ctx.
-// strTraceId and strSpanId must be valid hex encoding 16 and 8 bytes respectively (32 and 16 hex digits).
-// With no valid parent span, the result behaves as a sampled local root (Remote=false).
-// For inbound W3C headers, prefer [ExtractHTTP]; for remote parents and flags, see [InjectRemoteTrace].
+// InjectTrace decodes hexadecimal trace and span identifiers and stores them in ctx. strTraceId and
+// strSpanId must decode to 16 and 8 bytes respectively (32 and 16 hexadecimal digits). When no valid
+// parent span exists, the resulting context behaves as a sampled local root (Remote=false). For
+// inbound W3C headers, prefer [ExtractHTTP]; for remote parents with explicit sampling, use
+// [InjectRemoteTrace].
 func InjectTrace(ctx context.Context, strTraceId, strSpanId string) (context.Context, error) {
 	srcTraceId, err := hex.DecodeString(strTraceId)
 	if err != nil {
@@ -74,9 +67,10 @@ func InjectTrace(ctx context.Context, strTraceId, strSpanId string) (context.Con
 	return ctx, nil
 }
 
-// InjectRemoteTrace builds a remote [trace.SpanContext] from hex-encoded trace and span IDs.
-// sampled should match the trace-flags sampled bit on the wire. Remote is set to true (upstream span).
-// When full HTTP headers are available, prefer [ExtractHTTP] to restore tracestate and flags.
+// InjectRemoteTrace constructs a remote [trace.SpanContext] from hexadecimal trace and parent span
+// identifiers. The sampled flag should match the sampled bit in W3C trace flags on the wire; Remote
+// is set to true. When complete HTTP headers are available, prefer [ExtractHTTP] to preserve
+// tracestate and flags.
 func InjectRemoteTrace(ctx context.Context, strTraceId, strParentSpanId string, sampled bool) (context.Context, error) {
 	srcTraceId, err := hex.DecodeString(strTraceId)
 	if err != nil {
@@ -122,7 +116,8 @@ func InjectRemoteTrace(ctx context.Context, strTraceId, strParentSpanId string, 
 	return trace.ContextWithSpanContext(ctx, spanContext), nil
 }
 
-// NewTraceId returns a new trace ID as a 32-character lowercase hex string (16 random bytes).
+// NewTraceId returns a new trace identifier as a 32-character lowercase hexadecimal string (16
+// cryptographically random bytes).
 func NewTraceId() (string, error) {
 	var bytes [16]byte
 
@@ -134,7 +129,8 @@ func NewTraceId() (string, error) {
 	return hex.EncodeToString(bytes[:]), nil
 }
 
-// NewSpanId returns a new span ID as a 16-character lowercase hex string (8 random bytes).
+// NewSpanId returns a new span identifier as a 16-character lowercase hexadecimal string (8
+// cryptographically random bytes).
 func NewSpanId() (string, error) {
 	var bytes [8]byte
 
