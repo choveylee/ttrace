@@ -17,8 +17,8 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// InjectContext generates new trace and span IDs via [NewTraceId] and [NewSpanId], then calls [InjectTrace].
-// It returns the input ctx unchanged if ID generation fails.
+// InjectContext generates trace and span IDs with [NewTraceId] and [NewSpanId], then applies [InjectTrace].
+// On ID generation failure it returns ctx and the error from those helpers.
 func InjectContext(ctx context.Context) (context.Context, error) {
 	traceId, err := NewTraceId()
 	if err != nil {
@@ -33,10 +33,10 @@ func InjectContext(ctx context.Context) (context.Context, error) {
 	return InjectTrace(ctx, traceId, spanId)
 }
 
-// InjectTrace decodes hex trace id (32 chars) and span id (16 chars) into the context.
-// When ctx has no valid SpanContext, it behaves like a local root (Remote=false, sampled).
-// For ids and sampling copied from an inbound W3C traceparent header, use [InjectRemoteTrace]
-// or, preferably, [ExtractHTTP] so tracestate and flags stay aligned with the wire format.
+// InjectTrace decodes hex strings into trace and span IDs and stores them in ctx.
+// strTraceId and strSpanId must be valid hex encoding 16 and 8 bytes respectively (32 and 16 hex digits).
+// With no valid parent span, the result behaves as a sampled local root (Remote=false).
+// For inbound W3C headers, prefer [ExtractHTTP]; for remote parents and flags, see [InjectRemoteTrace].
 func InjectTrace(ctx context.Context, strTraceId, strSpanId string) (context.Context, error) {
 	srcTraceId, err := hex.DecodeString(strTraceId)
 	if err != nil {
@@ -44,7 +44,7 @@ func InjectTrace(ctx context.Context, strTraceId, strSpanId string) (context.Con
 	}
 
 	if len(srcTraceId) != 16 {
-		return ctx, fmt.Errorf("trace id illegal")
+		return ctx, fmt.Errorf("ttrace: trace ID length invalid: decoded %d byte(s), expected 16 (32 hex digits)", len(srcTraceId))
 	}
 
 	srcSpanId, err := hex.DecodeString(strSpanId)
@@ -53,7 +53,7 @@ func InjectTrace(ctx context.Context, strTraceId, strSpanId string) (context.Con
 	}
 
 	if len(srcSpanId) != 8 {
-		return ctx, fmt.Errorf("span id illegal")
+		return ctx, fmt.Errorf("ttrace: span ID length invalid: decoded %d byte(s), expected 8 (16 hex digits)", len(srcSpanId))
 	}
 
 	var desTraceId [16]byte
@@ -74,10 +74,9 @@ func InjectTrace(ctx context.Context, strTraceId, strSpanId string) (context.Con
 	return ctx, nil
 }
 
-// InjectRemoteTrace sets trace id and parent span id from hex strings, as when reconstructing
-// W3C trace context without full header parsing. sampled should match the trace-flags sampled bit.
-// The SpanContext is marked Remote=true (upstream / cross-service). If you have raw HTTP headers,
-// use [ExtractHTTP] instead to also recover tracestate and avoid manual flag handling.
+// InjectRemoteTrace builds a remote [trace.SpanContext] from hex-encoded trace and span IDs.
+// sampled should match the trace-flags sampled bit on the wire. Remote is set to true (upstream span).
+// When full HTTP headers are available, prefer [ExtractHTTP] to restore tracestate and flags.
 func InjectRemoteTrace(ctx context.Context, strTraceId, strParentSpanId string, sampled bool) (context.Context, error) {
 	srcTraceId, err := hex.DecodeString(strTraceId)
 	if err != nil {
@@ -85,7 +84,7 @@ func InjectRemoteTrace(ctx context.Context, strTraceId, strParentSpanId string, 
 	}
 
 	if len(srcTraceId) != 16 {
-		return ctx, fmt.Errorf("trace id illegal")
+		return ctx, fmt.Errorf("ttrace: trace ID length invalid: decoded %d byte(s), expected 16 (32 hex digits)", len(srcTraceId))
 	}
 
 	srcSpanId, err := hex.DecodeString(strParentSpanId)
@@ -94,7 +93,7 @@ func InjectRemoteTrace(ctx context.Context, strTraceId, strParentSpanId string, 
 	}
 
 	if len(srcSpanId) != 8 {
-		return ctx, fmt.Errorf("span id illegal")
+		return ctx, fmt.Errorf("ttrace: span ID length invalid: decoded %d byte(s), expected 8 (16 hex digits)", len(srcSpanId))
 	}
 
 	var desTraceId [16]byte
@@ -123,7 +122,7 @@ func InjectRemoteTrace(ctx context.Context, strTraceId, strParentSpanId string, 
 	return trace.ContextWithSpanContext(ctx, spanContext), nil
 }
 
-// NewTraceId returns a new W3C trace id as a 32-character lowercase hex string (16 bytes).
+// NewTraceId returns a new trace ID as a 32-character lowercase hex string (16 random bytes).
 func NewTraceId() (string, error) {
 	var bytes [16]byte
 
@@ -135,7 +134,7 @@ func NewTraceId() (string, error) {
 	return hex.EncodeToString(bytes[:]), nil
 }
 
-// NewSpanId returns a new span id as a 16-character lowercase hex string (8 bytes).
+// NewSpanId returns a new span ID as a 16-character lowercase hex string (8 random bytes).
 func NewSpanId() (string, error) {
 	var bytes [8]byte
 

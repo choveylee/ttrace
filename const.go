@@ -8,31 +8,35 @@
 
 package ttrace
 
-// Configuration key strings for github.com/choveylee/tcfg (often environment variables).
+// Configuration keys for [github.com/choveylee/tcfg] (commonly backed by environment variables).
 const (
-	// AppName selects service.name when set; otherwise the executable base name is used.
+	// AppName sets service.name; if unset, the executable base name is used.
 	AppName = "APP_NAME"
 
-	// ServiceVersion is optional; maps to OpenTelemetry service.version.
+	// ServiceVersion maps to OpenTelemetry service.version (optional).
 	ServiceVersion = "SERVICE_VERSION"
-	// ServiceNamespace optional; service.namespace (e.g. Kubernetes namespace).
+	// ServiceNamespace maps to service.namespace (optional; e.g. Kubernetes namespace).
 	ServiceNamespace = "SERVICE_NAMESPACE"
-	// ServiceInstanceID optional; service.instance.id (pod name, hostname, etc.).
+	// ServiceInstanceID maps to service.instance.id (optional).
 	ServiceInstanceID = "SERVICE_INSTANCE_ID"
-	// DeploymentEnvironmentName optional; deployment.environment.name (e.g. production, staging).
+	// DeploymentEnvironmentName maps to deployment.environment.name (optional).
 	DeploymentEnvironmentName = "DEPLOYMENT_ENVIRONMENT_NAME"
 
+	// TracerMode selects exporter mode; values are [TracerModeDisable], [TracerModeStdout], [TracerModeOTLP].
 	TracerMode = "TRACER_MODE"
 
-	JaegerEndpoint = "TRACER_JAEGER_ENDPOINT"
+	// OTLPEndpoint is the OTLP/HTTP trace endpoint (host:port) when TracerMode is [TracerModeOTLP].
+	OTLPEndpoint = "TRACER_OTLP_ENDPOINT"
 
+	// TracerSamplingFraction is the trace ID ratio for [GuaranteedThroughputProbabilitySampler].
 	TracerSamplingFraction = "TRACER_SAMPLING_FRACTION"
-	TracerMaxTracesPerSec  = "TRACER_MAX_TRACES_PER_SEC"
+	// TracerMaxTracesPerSec caps throughput after the ratio stage (traces per second).
+	TracerMaxTracesPerSec = "TRACER_MAX_TRACES_PER_SEC"
 )
 
-// TracerModeDisable, TracerModeStdout, and TracerModeJaeger are the allowed integer values for key TracerMode (TRACER_MODE).
+// Tracer mode values for [TracerMode] / TRACER_MODE.
 const (
 	TracerModeDisable = iota
 	TracerModeStdout
-	TracerModeJaeger
+	TracerModeOTLP
 )

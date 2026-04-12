@@ -25,7 +25,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	"go.opentelemetry.io/otel/semconv/v1.40.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.40.0"
 	"go.opentelemetry.io/otel/trace/noop"
 )
 
@@ -33,8 +33,8 @@ var (
 	tracerProvider *sdktrace.TracerProvider
 )
 
-// init reads tracer configuration, starts the configured SDK provider or noop fallback,
-// and on start failure installs noop tracing via [installNoopTracing].
+// init reads tracer configuration, starts the SDK or noop provider, and on failure falls back to
+// noop tracing via [installNoopTracing].
 func init() {
 	ctx := context.Background()
 
@@ -51,14 +51,13 @@ func init() {
 	}
 }
 
-// GetTracerProvider returns the package-level SDK TracerProvider when stdout or OTLP mode
-// succeeded, or nil when tracing is disabled or running in noop fallback.
+// GetTracerProvider returns the package-level SDK TracerProvider after successful stdout or OTLP
+// startup, or nil when tracing is disabled or the noop fallback is active.
 func GetTracerProvider() *sdktrace.TracerProvider {
 	return tracerProvider
 }
 
-// Shutdown flushes and shuts down the SDK TracerProvider if one was installed; it is a no-op
-// when GetTracerProvider returns nil.
+// Shutdown flushes and shuts down the SDK TracerProvider when [GetTracerProvider] is non-nil.
 func Shutdown() error {
 	if tracerProvider != nil {
 		err := tracerProvider.Shutdown(context.Background())
@@ -72,11 +71,10 @@ func Shutdown() error {
 	return nil
 }
 
-// startTracer configures resource, exporter, sampler, and global TracerProvider for stdout or OTLP
-// modes. Disable or unknown modes return [installNoopTracing]. Errors are returned for resource
-// or exporter construction failures.
+// startTracer builds resource, exporter, sampler, and sets the global TracerProvider for stdout or OTLP.
+// Disabled or unknown modes invoke [installNoopTracing]. Returns an error if resource or exporter setup fails.
 func startTracer(ctx context.Context, tracerMode int) error {
-	if tracerMode != TracerModeStdout && tracerMode != TracerModeJaeger {
+	if tracerMode != TracerModeStdout && tracerMode != TracerModeOTLP {
 		if tracerMode != TracerModeDisable {
 			log.Printf("start tracer: unknown trace mode %d", tracerMode)
 		}
@@ -101,16 +99,16 @@ func startTracer(ctx context.Context, tracerMode int) error {
 			return err
 		}
 	} else {
-		jaegerEndpoint := tcfg.DefaultString(tcfg.LocalKey(JaegerEndpoint), "")
-		if jaegerEndpoint == "" {
-			log.Printf("start tracer err (jaeger endpoint illegal).")
+		otlpEndpoint := strings.TrimSpace(tcfg.DefaultString(tcfg.LocalKey(OTLPEndpoint), ""))
+		if otlpEndpoint == "" {
+			log.Printf("start tracer err (empty OTLP endpoint: set %s).", OTLPEndpoint)
 
-			return fmt.Errorf("jaeger endpoint illegal")
+			return fmt.Errorf("ttrace: OTLP endpoint is empty (set %s)", OTLPEndpoint)
 		}
 
-		tracerExporter, err = newTraceExporter(ctx, jaegerEndpoint)
+		tracerExporter, err = newTraceExporter(ctx, otlpEndpoint)
 		if err != nil {
-			log.Printf("start tracer (%s) err (new jaeger exporter %v).", jaegerEndpoint, err)
+			log.Printf("start tracer OTLP (%s) err (new exporter %v).", otlpEndpoint, err)
 
 			return err
 		}
@@ -137,8 +135,8 @@ func startTracer(ctx context.Context, tracerMode int) error {
 	return nil
 }
 
-// installNoopTracing sets the global TracerProvider to a noop implementation, clears the SDK pointer,
-// and reinstalls the composite propagator so context propagation still works without exporting spans.
+// installNoopTracing sets a noop global TracerProvider, clears the SDK pointer, and reinstalls
+// propagators so context extraction and injection still work without exporting spans.
 func installNoopTracing() error {
 	tracerProvider = nil
 
@@ -148,13 +146,13 @@ func installNoopTracing() error {
 	return nil
 }
 
-// installPropagator sets the global TextMapPropagator to W3C trace context plus baggage.
+// installPropagator sets the global TextMapPropagator to W3C Trace Context and W3C Baggage.
 func installPropagator() {
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
 }
 
-// newResource builds an OpenTelemetry [resource.Resource] with service.name (required) and optional
-// service metadata from configuration keys such as [ServiceVersion] and [DeploymentEnvironmentName].
+// newResource constructs a [resource.Resource] with service.name and optional attributes from tcfg
+// keys such as [ServiceVersion] and [DeploymentEnvironmentName].
 func newResource() (*resource.Resource, error) {
 	appName := tcfg.DefaultString(AppName, "")
 	if appName == "" {
@@ -191,11 +189,11 @@ func newResource() (*resource.Resource, error) {
 	return r, nil
 }
 
-// newTraceExporter creates an OTLP/HTTP trace exporter targeting jaegerEndpoint (host:port, TLS not used).
-func newTraceExporter(ctx context.Context, jaegerEndpoint string) (*otlptrace.Exporter, error) {
+// newTraceExporter returns an OTLP/HTTP trace exporter for endpoint (host:port; insecure client).
+func newTraceExporter(ctx context.Context, endpoint string) (*otlptrace.Exporter, error) {
 	client := otlptracehttp.NewClient(
 		otlptracehttp.WithInsecure(),
-		otlptracehttp.WithEndpoint(jaegerEndpoint),
+		otlptracehttp.WithEndpoint(endpoint),
 	)
 
 	exporter, err := otlptrace.New(ctx, client)
@@ -206,7 +204,7 @@ func newTraceExporter(ctx context.Context, jaegerEndpoint string) (*otlptrace.Ex
 	return exporter, err
 }
 
-// newStdoutExporter returns a span exporter that writes OTLP-style trace data to stdout with pretty printing.
+// newStdoutExporter returns a stdout span exporter with pretty-printed OTLP-style output.
 func newStdoutExporter() (sdktrace.SpanExporter, error) {
 	exporter, err := stdouttrace.New(stdouttrace.WithPrettyPrint())
 
