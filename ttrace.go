@@ -11,13 +11,13 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// TracerName is the OpenTelemetry instrumentation scope name passed to [go.opentelemetry.io/otel.Tracer].
+// TracerName is the OpenTelemetry instrumentation scope name used by [Start] and [GetTracer].
 const (
 	TracerName = "github.com/choveylee/ttrace"
 )
 
-// ContextWithBaggage parses items as the value of a W3C Baggage header and returns a context that
-// carries that baggage. On parse failure it returns ctx unchanged and the error from
+// ContextWithBaggage parses items as a W3C Baggage header value and returns a context that carries
+// the parsed baggage. On parse failure, it returns ctx unchanged together with the error from
 // [go.opentelemetry.io/otel/baggage.Parse].
 func ContextWithBaggage(ctx context.Context, items string) (context.Context, error) {
 	bag, err := baggage.Parse(items)
@@ -28,19 +28,20 @@ func ContextWithBaggage(ctx context.Context, items string) (context.Context, err
 	return baggage.ContextWithBaggage(ctx, bag), nil
 }
 
-// Start starts a span with the given name using the global TracerProvider and instrumentation
-// scope [TracerName]. The opts arguments are passed to [trace.Tracer.Start].
+// Start starts a span with the given name using the global TracerProvider and instrumentation scope
+// [TracerName]. The opts arguments are passed through to [trace.Tracer.Start].
 func Start(ctx context.Context, spanName string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
 	return otel.Tracer(TracerName).Start(ctx, spanName, opts...)
 }
 
-// GetTracer returns the [trace.Tracer] for scope [TracerName] from the global TracerProvider.
+// GetTracer returns the [trace.Tracer] for instrumentation scope [TracerName] from the global
+// TracerProvider.
 func GetTracer() trace.Tracer {
 	return otel.Tracer(TracerName)
 }
 
-// GetSpan returns the current [trace.Span] from ctx. The span may be non-recording when no span
-// is active in the context.
+// GetSpan returns the current [trace.Span] from ctx. The returned span may be non-recording when no
+// span is active in the context.
 func GetSpan(ctx context.Context) trace.Span {
 	span := trace.SpanFromContext(ctx)
 	return span
@@ -51,16 +52,16 @@ func GetSpanContext(ctx context.Context) trace.SpanContext {
 	return trace.SpanFromContext(ctx).SpanContext()
 }
 
-// GetBaggage returns the W3C Baggage associated with ctx, whether attached with [ContextWithBaggage]
-// or restored by the global TextMapPropagator during [Extract].
+// GetBaggage returns the W3C baggage stored in ctx, whether attached with [ContextWithBaggage] or
+// restored by the global TextMapPropagator during [Extract].
 func GetBaggage(ctx context.Context) baggage.Baggage {
 	return baggage.FromContext(ctx)
 }
 
-// SetTraceId replaces the trace identifier on the span context in ctx. If the existing
-// [trace.SpanContext] is valid, only the trace ID changes. If it is invalid, a new sampled local
-// root context is built with traceId and a randomly generated span ID. If traceId is invalid, or
-// span ID generation fails, ctx is returned unchanged.
+// SetTraceId replaces the trace ID on the span context in ctx. If the existing [trace.SpanContext]
+// is valid, only the trace ID changes. Otherwise, a new sampled local-root context is created with
+// traceId and a randomly generated span ID. If traceId is invalid, or span ID generation fails, ctx
+// is returned unchanged.
 func SetTraceId(ctx context.Context, traceId trace.TraceID) context.Context {
 	spanContext, ok := spanContextWithTraceID(trace.SpanFromContext(ctx).SpanContext(), traceId)
 	if !ok {
@@ -113,8 +114,8 @@ func spanContextWithTraceID(spanContext trace.SpanContext, traceId trace.TraceID
 	}), true
 }
 
-// GetTraceId returns the trace identifier of the current span in ctx. The result is invalid when
-// no span is present in the context.
+// GetTraceId returns the trace ID of the current span in ctx. The result is invalid when no span is
+// present in the context.
 func GetTraceId(ctx context.Context) trace.TraceID {
 	span := trace.SpanFromContext(ctx)
 
@@ -126,20 +127,21 @@ func ValidTraceId(traceId trace.TraceID) bool {
 	return traceId.IsValid()
 }
 
-// Inject serializes trace and baggage from ctx into supplier using the global TextMapPropagator.
+// Inject writes trace context and baggage from ctx into supplier by using the global
+// TextMapPropagator.
 func Inject(ctx context.Context, supplier propagation.TextMapCarrier) {
 	otel.GetTextMapPropagator().Inject(ctx, supplier)
 }
 
-// Extract returns a child of ctx whose trace and baggage state is deserialized from supplier using
-// the global TextMapPropagator.
+// Extract returns a child of ctx whose trace and baggage state is deserialized from supplier by
+// using the global TextMapPropagator.
 func Extract(ctx context.Context, supplier propagation.TextMapCarrier) context.Context {
 	return otel.GetTextMapPropagator().Extract(ctx, supplier)
 }
 
-// ExtractHTTP applies the global TextMapPropagator to header (for example traceparent, tracestate,
-// and baggage). Prefer this for inbound HTTP requests over manual hex identifiers so sampling flags
-// and tracestate match the wire representation.
+// ExtractHTTP applies the global TextMapPropagator to header values such as traceparent,
+// tracestate, and baggage. Prefer this helper for inbound HTTP requests over manual hex identifiers
+// so sampling flags and tracestate remain consistent with the wire representation.
 func ExtractHTTP(ctx context.Context, header http.Header) context.Context {
 	if header == nil {
 		return ctx

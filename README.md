@@ -1,6 +1,10 @@
 # ttrace
 
-OpenTelemetry helpers for Go: global `TracerProvider` bootstrap (noop, stdout, or OTLP/HTTP), W3C propagation and baggage, HTTP utilities, and sampling helpers. Optional Gin integration lives in a separate module (`github.com/choveylee/ttrace/gin`) so the core package does not depend on Gin.
+`ttrace` provides OpenTelemetry tracing helpers for Go. It bootstraps a global `TracerProvider`
+(`noop`, `stdout`, or OTLP/HTTP), installs W3C Trace Context and Baggage propagation, and exposes
+convenience helpers for span creation, context extraction and injection, HTTP instrumentation, and
+sampling. Optional Gin integration lives in a separate module
+(`github.com/choveylee/ttrace/gin`) so the core package does not depend on Gin.
 
 ## Requirements
 
@@ -22,35 +26,39 @@ go get github.com/choveylee/ttrace/gin@latest
 
 ## Features
 
-- **Initialization:** On import, configuration is read via [tcfg](https://github.com/choveylee/tcfg) (typically environment variables). The global `TracerProvider` is started for stdout or OTLP/HTTP export, or a noop provider is used when tracing is disabled or startup fails.
-- **Propagators:** W3C Trace Context and W3C Baggage are installed so `Inject` / `Extract` / `ExtractHTTP` behave consistently.
-- **Resource attributes** (semconv v1.40.0): `service.name` (required; defaults to the executable base name if unset), plus optional `service.version`, `service.namespace`, `service.instance.id`, and `deployment.environment.name`.
-- **Helpers:** Spans (`Start`), HTTP extraction (`ExtractHTTP`), manual ID injection (`InjectTrace`, `InjectRemoteTrace`, `InjectContext`), baggage (`ContextWithBaggage`), `Shutdown`, and more.
-- **Sampling:** Configurable ratio sampling combined with a per-second throughput cap (`GuaranteedThroughputProbabilitySampler`), or forced always-on sampling when both tuning knobs are set to `-1`.
+- **Initialization:** On import, configuration is loaded through [tcfg](https://github.com/choveylee/tcfg) (typically from environment variables). The global `TracerProvider` is started for stdout or OTLP/HTTP export, or a noop provider is installed when tracing is disabled or initialization fails.
+- **Propagation:** W3C Trace Context and W3C Baggage propagators are installed so `Inject`, `Extract`, and `ExtractHTTP` behave consistently.
+- **Resource attributes** (semconv v1.40.0): `service.name` is always set and defaults to the executable base name when unset. Optional attributes include `service.version`, `service.namespace`, `service.instance.id`, and `deployment.environment.name`.
+- **Helper APIs:** Span helpers (`Start`), HTTP extraction (`ExtractHTTP`), manual context injection (`InjectTrace`, `InjectRemoteTrace`, `InjectContext`), baggage helpers (`ContextWithBaggage`), `Shutdown`, and more.
+- **Sampling:** Configurable trace-ID ratio sampling can be combined with a per-second throughput cap (`GuaranteedThroughputProbabilitySampler`). Set either knob to `-1` to disable that stage, or set both to `-1` to enable always-on sampling.
 
-**Endpoint:** set **`TRACER_OTLP_ENDPOINT`** to the OTLP/HTTP `host:port` (e.g. collector OTLP port). This is **not** the legacy Jaeger agent UDP protocol.
+**Endpoint:** Set **`TRACER_OTLP_ENDPOINT`** to the OTLP/HTTP `host:port` (for example, the
+collector OTLP port). This is **not** the legacy Jaeger agent UDP protocol.
 
 ## Configuration
 
-Values are resolved through `tcfg` (usually from environment variables). Keys used in code:
+Values are resolved through `tcfg`, usually from environment variables. The following keys are used
+by the package:
 
 | Key | Description |
 |-----|-------------|
-| `TRACER_MODE` | `0` = disabled (noop), `1` = stdout exporter, `2` = OTLP/HTTP exporter |
-| `TRACER_OTLP_ENDPOINT` | OTLP/HTTP `host:port` (e.g. `localhost:4318`). TLS is not enabled by default in the current client. |
-| `TRACER_SAMPLING_FRACTION` | Trace ID ratio sampler (e.g. `0.1`). Set to **`-1`** together with `TRACER_MAX_TRACES_PER_SEC=-1` to use **always** sampling. |
-| `TRACER_MAX_TRACES_PER_SEC` | Upper bound on sampled traces per second after the ratio stage (throughput ceiling). |
-| `APP_NAME` | Maps to `service.name`; if empty, the executable base name is used. |
-| `SERVICE_VERSION` | Optional `service.version`. |
-| `SERVICE_NAMESPACE` | Optional `service.namespace`. |
-| `SERVICE_INSTANCE_ID` | Optional `service.instance.id`. |
-| `DEPLOYMENT_ENVIRONMENT_NAME` | Optional `deployment.environment.name` (e.g. `production`). |
+| `TRACER_MODE` | `0` = disabled (`noop`), `1` = stdout exporter, `2` = OTLP/HTTP exporter |
+| `TRACER_OTLP_ENDPOINT` | OTLP/HTTP `host:port` (for example `localhost:4318`). TLS is not enabled by default in the current client. |
+| `TRACER_SAMPLING_FRACTION` | Trace-ID ratio sampler value (for example `0.1`). Use values `>= 0`, or **`-1`** to disable the ratio stage. |
+| `TRACER_MAX_TRACES_PER_SEC` | Upper bound on sampled root traces per second after the ratio stage. Use values `>= 0`, or **`-1`** to disable the throughput cap. |
+| `APP_NAME` | Maps to `service.name`. When empty, the executable base name is used. |
+| `SERVICE_VERSION` | Optional `service.version` attribute. |
+| `SERVICE_NAMESPACE` | Optional `service.namespace` attribute. |
+| `SERVICE_INSTANCE_ID` | Optional `service.instance.id` attribute. |
+| `DEPLOYMENT_ENVIRONMENT_NAME` | Optional `deployment.environment.name` attribute (for example `production`). |
 
-If tracer startup fails, the package logs the error and falls back to **noop** tracing while keeping propagators installed.
+If tracer initialization fails, the package logs the error and falls back to **noop** tracing while
+keeping propagators installed. Sampling values below `-1` are treated as invalid configuration and
+therefore trigger the same fallback behavior.
 
 ## Usage
 
-**Shutdown** (recommended when an SDK exporter is active):
+**Shutdown** (recommended when an SDK-backed exporter is active):
 
 ```go
 defer func() { _ = ttrace.Shutdown() }()
@@ -63,13 +71,13 @@ ctx, span := ttrace.Start(ctx, "operation")
 defer span.End()
 ```
 
-**Incoming HTTP — prefer standard headers (`traceparent`, `tracestate`, optional `baggage`):**
+**Incoming HTTP**: Prefer standard headers (`traceparent`, `tracestate`, and optional `baggage`).
 
 ```go
 ctx := ttrace.ExtractHTTP(r.Context(), r.Header)
 ```
 
-**Outgoing requests — inject into a carrier (e.g. headers):**
+**Outgoing requests**: Inject into a carrier such as request headers.
 
 ```go
 ttrace.Inject(ctx, carrier)
@@ -78,10 +86,12 @@ ttrace.Inject(ctx, carrier)
 **`net/http` server wrapper** ([otelhttp](https://pkg.go.dev/go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp)):
 
 ```go
-h := ttrace.WrapHandler(yourHandler, "my-service")
+h := ttrace.WrapHandler(yourHandler, "users.handler")
 ```
 
-**Gin** (optional submodule; [otelgin](https://pkg.go.dev/go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin) performs extraction; do not call `ExtractHTTP` again for the same request unless you intend duplicate processing):
+**Gin**: Use the optional submodule. [otelgin](https://pkg.go.dev/go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin)
+performs extraction, so do not call `ExtractHTTP` again for the same request unless duplicate
+processing is intentional.
 
 ```go
 import ttracegin "github.com/choveylee/ttrace/gin"
@@ -95,15 +105,15 @@ r.Use(ttracegin.Middleware("my-service"))
 |--------|---------|
 | `ExtractHTTP` | Extract trace context from `http.Header`. |
 | `Inject` / `Extract` | Use the global `TextMapPropagator` with a `propagation.TextMapCarrier`. |
-| `InjectTrace` | Decode hex trace and span IDs into the context (local-root semantics when no valid parent span). |
-| `InjectRemoteTrace` | Build a remote `SpanContext` from hex IDs and a sampled flag when full header parsing is unavailable. |
+| `InjectTrace` | Decode valid hexadecimal trace and span IDs into the context (local-root semantics when no valid parent span exists). |
+| `InjectRemoteTrace` | Build a remote `SpanContext` from valid hexadecimal IDs and a sampled flag when full header parsing is unavailable. |
 | `InjectContext` | Generate new IDs with `NewTraceId` / `NewSpanId` and call `InjectTrace`. |
-| `Start`, `GetTracer`, `GetSpan`, `GetSpanContext` | Span and tracer access using [TracerName]. |
+| `Start`, `GetTracer`, `GetSpan`, `GetSpanContext` | Span and tracer access by using [TracerName]. |
 | `SetTraceId`, `GetTraceId`, `ValidTraceId` | Trace ID helpers on `context.Context`. |
 | `ContextWithBaggage`, `GetBaggage` | W3C Baggage helpers. |
-| `WrapHandler` | HTTP server instrumentation. |
-| `GetTracerProvider` | Non-nil only when stdout or OTLP mode started successfully. |
-| `Shutdown` | Shut down the SDK `TracerProvider` when installed. |
+| `WrapHandler` | `net/http` server instrumentation helper. |
+| `GetTracerProvider` | Non-nil only when stdout or OTLP mode starts successfully. |
+| `Shutdown` | Shut down the SDK `TracerProvider` when it is installed. |
 
 ## Testing
 

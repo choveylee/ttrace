@@ -1,12 +1,14 @@
-// Package ttrace provides OpenTelemetry integration for distributed tracing: W3C Trace Context and
-// Baggage propagation, injecting and extracting trace identifiers on [context.Context], creating
-// spans, and configuring the global [go.opentelemetry.io/otel.TracerProvider] (stdout or OTLP export,
-// with noop fallback). The instrumentation scope name is [TracerName].
+// Package ttrace provides OpenTelemetry tracing helpers for Go applications.
 //
-// During package initialization, the package registers the global TracerProvider and TextMapPropagator,
-// using configuration keys from [github.com/choveylee/tcfg] such as [TracerMode], [OTLPEndpoint], and
-// [AppName]. Call [Shutdown] before process exit to flush pending spans when the SDK provider is active.
+// The package initializes the global TracerProvider and TextMapPropagator, supports stdout and
+// OTLP/HTTP exporters with noop fallback, and exposes helpers for span creation, context
+// propagation, baggage handling, and manual trace-context injection. The instrumentation scope name
+// used by [Start] and [GetTracer] is [TracerName].
 //
-// For [github.com/gin-gonic/gin], use subpackage [github.com/choveylee/ttrace/gin] so applications
-// that only use [net/http] do not depend on Gin.
+// During package initialization, configuration is loaded through [github.com/choveylee/tcfg] using
+// keys such as [TracerMode], [OTLPEndpoint], and [AppName]. Call [Shutdown] before process exit
+// when an SDK-backed provider is active so pending spans are flushed.
+//
+// Applications that use [github.com/gin-gonic/gin] should import subpackage
+// [github.com/choveylee/ttrace/gin]. The core module itself does not depend on Gin.
 package ttrace

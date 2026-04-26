@@ -25,8 +25,8 @@ var (
 	tracerProvider *sdktrace.TracerProvider
 )
 
-// init loads tracer configuration from tcfg, starts the SDK or a noop TracerProvider, and on
-// failure invokes installNoopTracing to continue with noop tracing.
+// init loads tracing configuration through tcfg, installs an SDK-backed TracerProvider when
+// possible, and falls back to noop tracing if initialization fails.
 func init() {
 	ctx := context.Background()
 
@@ -43,14 +43,14 @@ func init() {
 	}
 }
 
-// GetTracerProvider returns the package-level [*sdktrace.TracerProvider] after successful stdout or
-// OTLP startup. It returns nil when tracing is disabled or the noop fallback is active.
+// GetTracerProvider returns the package-level [*sdktrace.TracerProvider] when stdout or OTLP startup
+// succeeds. It returns nil when tracing is disabled or the noop fallback is active.
 func GetTracerProvider() *sdktrace.TracerProvider {
 	return tracerProvider
 }
 
-// Shutdown flushes and shuts down the SDK TracerProvider returned by [GetTracerProvider] when that
-// value is non-nil.
+// Shutdown flushes and shuts down the SDK [sdktrace.TracerProvider] returned by
+// [GetTracerProvider], when present.
 func Shutdown() error {
 	if tracerProvider != nil {
 		err := tracerProvider.Shutdown(context.Background())
@@ -64,9 +64,9 @@ func Shutdown() error {
 	return nil
 }
 
-// startTracer constructs the resource, span exporter, and sampler, then installs the global
-// TracerProvider for stdout or OTLP export. Disabled or unknown modes delegate to
-// [installNoopTracing]. It returns an error if resource or exporter construction fails.
+// startTracer constructs the resource, exporter, and sampler, then installs the global
+// TracerProvider for stdout or OTLP/HTTP export. Disabled or unknown modes delegate to
+// [installNoopTracing]. It returns an error when resource, sampler, or exporter construction fails.
 func startTracer(ctx context.Context, tracerMode int) error {
 	if tracerMode != TracerModeStdout && tracerMode != TracerModeOTLP {
 		if tracerMode != TracerModeDisable {
@@ -79,6 +79,15 @@ func startTracer(ctx context.Context, tracerMode int) error {
 	res, err := newResource()
 	if err != nil {
 		log.Printf("start tracer err (new resource %v).", err)
+
+		return err
+	}
+
+	samplingFraction := tcfg.DefaultFloat64(tcfg.LocalKey(TracerSamplingFraction), 0.1)
+	maxTracesPerSecond := tcfg.DefaultFloat64(tcfg.LocalKey(TracerMaxTracesPerSec), 1.0)
+	sampler, err := configuredSampler(samplingFraction, maxTracesPerSecond)
+	if err != nil {
+		log.Printf("start tracer err (configure sampler %v).", err)
 
 		return err
 	}
@@ -97,7 +106,7 @@ func startTracer(ctx context.Context, tracerMode int) error {
 		if otlpEndpoint == "" {
 			log.Printf("start tracer err (empty OTLP endpoint: set %s).", OTLPEndpoint)
 
-			return fmt.Errorf("ttrace: OTLP endpoint is empty (set %s)", OTLPEndpoint)
+			return fmt.Errorf("ttrace: missing %s for OTLP exporter", OTLPEndpoint)
 		}
 
 		tracerExporter, err = newTraceExporter(ctx, otlpEndpoint)
@@ -106,15 +115,6 @@ func startTracer(ctx context.Context, tracerMode int) error {
 
 			return err
 		}
-	}
-
-	sampler := sdktrace.AlwaysSample()
-
-	samplingFraction := tcfg.DefaultFloat64(tcfg.LocalKey(TracerSamplingFraction), 0.1)
-	maxTracesPerSecond := tcfg.DefaultFloat64(tcfg.LocalKey(TracerMaxTracesPerSec), 1.0)
-
-	if samplingFraction != -1 && maxTracesPerSecond != -1 {
-		sampler = GuaranteedThroughputProbabilitySampler(samplingFraction, maxTracesPerSecond)
 	}
 
 	tracerProvider = sdktrace.NewTracerProvider(
@@ -129,8 +129,40 @@ func startTracer(ctx context.Context, tracerMode int) error {
 	return nil
 }
 
+// configuredSampler interprets -1 as disabling an individual sampling stage. When both values are
+// -1, root sampling is always enabled. Values below -1 are rejected. The returned sampler is
+// parent-based so child spans inherit their parent decision.
+func configuredSampler(samplingFraction, maxTracesPerSecond float64) (sdktrace.Sampler, error) {
+	if err := validateSamplingConfigValue(TracerSamplingFraction, samplingFraction); err != nil {
+		return nil, err
+	}
+
+	if err := validateSamplingConfigValue(TracerMaxTracesPerSec, maxTracesPerSecond); err != nil {
+		return nil, err
+	}
+
+	switch {
+	case samplingFraction == -1 && maxTracesPerSecond == -1:
+		return sdktrace.ParentBased(sdktrace.AlwaysSample()), nil
+	case samplingFraction == -1:
+		return RateLimitingSampler(maxTracesPerSecond), nil
+	case maxTracesPerSecond == -1:
+		return sdktrace.ParentBased(sdktrace.TraceIDRatioBased(samplingFraction)), nil
+	default:
+		return GuaranteedThroughputProbabilitySampler(samplingFraction, maxTracesPerSecond), nil
+	}
+}
+
+func validateSamplingConfigValue(key string, value float64) error {
+	if value < -1 {
+		return fmt.Errorf("ttrace: invalid %s: must be -1 or >= 0 (got %v)", key, value)
+	}
+
+	return nil
+}
+
 // installNoopTracing registers a noop global TracerProvider, clears the SDK provider pointer, and
-// reinstalls propagators so context propagation continues to function without exporting spans.
+// reinstalls propagators so context propagation remains available without exporting spans.
 func installNoopTracing() error {
 	tracerProvider = nil
 
@@ -140,13 +172,14 @@ func installNoopTracing() error {
 	return nil
 }
 
-// installPropagator sets the global TextMapPropagator to a composite of W3C Trace Context and W3C Baggage.
+// installPropagator installs a global TextMapPropagator composed of W3C Trace Context and W3C
+// Baggage propagators.
 func installPropagator() {
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
 }
 
-// newResource builds a [resource.Resource] with service.name and optional attributes derived from
-// tcfg keys including [ServiceVersion] and [DeploymentEnvironmentName].
+// newResource builds a [resource.Resource] containing service.name and optional attributes derived
+// from tcfg keys such as [ServiceVersion] and [DeploymentEnvironmentName].
 func newResource() (*resource.Resource, error) {
 	appName := tcfg.DefaultString(AppName, "")
 	if appName == "" {
@@ -183,7 +216,8 @@ func newResource() (*resource.Resource, error) {
 	return r, nil
 }
 
-// newTraceExporter creates an OTLP/HTTP trace exporter for endpoint (host:port) using an insecure client.
+// newTraceExporter creates an OTLP/HTTP trace exporter for endpoint (host:port) using an insecure
+// client configuration.
 func newTraceExporter(ctx context.Context, endpoint string) (*otlptrace.Exporter, error) {
 	client := otlptracehttp.NewClient(
 		otlptracehttp.WithInsecure(),
@@ -198,7 +232,7 @@ func newTraceExporter(ctx context.Context, endpoint string) (*otlptrace.Exporter
 	return exporter, err
 }
 
-// newStdoutExporter constructs a stdout span exporter that prints OTLP-style span data with pretty formatting.
+// newStdoutExporter constructs a stdout span exporter with pretty-print formatting.
 func newStdoutExporter() (sdktrace.SpanExporter, error) {
 	exporter, err := stdouttrace.New(stdouttrace.WithPrettyPrint())
 
