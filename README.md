@@ -1,9 +1,9 @@
 # ttrace
 
-`ttrace` provides OpenTelemetry tracing helpers for Go. It bootstraps a global `TracerProvider`
-(`noop`, `stdout`, or OTLP/HTTP), installs W3C Trace Context and Baggage propagation, and exposes
-convenience helpers for span creation, context extraction and injection, HTTP instrumentation, and
-sampling. Optional Gin integration lives in a separate module
+The `ttrace` module provides OpenTelemetry tracing helpers for Go. It bootstraps a global
+`TracerProvider` (`noop`, `stdout`, or OTLP/HTTP), installs W3C Trace Context and Baggage
+propagation, and exposes convenience helpers for span creation, context extraction and injection,
+HTTP instrumentation, and sampling. Optional Gin integration lives in a separate module
 (`github.com/choveylee/ttrace/gin`) so the core package does not depend on Gin.
 
 ## Requirements

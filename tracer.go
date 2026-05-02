@@ -34,11 +34,11 @@ func init() {
 
 	err := startTracer(ctx, tracerMode)
 	if err != nil {
-		log.Printf("init err (start tracer %v), falling back to noop tracing.", err)
+		log.Printf("ttrace: tracer initialization failed: %v; falling back to noop tracing", err)
 
 		err = installNoopTracing()
 		if err != nil {
-			log.Printf("init err (install noop tracing %v).", err)
+			log.Printf("ttrace: noop tracing installation failed: %v", err)
 		}
 	}
 }
@@ -55,7 +55,7 @@ func Shutdown() error {
 	if tracerProvider != nil {
 		err := tracerProvider.Shutdown(context.Background())
 		if err != nil {
-			log.Printf("shut down err (%v).", err)
+			log.Printf("ttrace: tracer shutdown failed: %v", err)
 
 			return err
 		}
@@ -70,7 +70,7 @@ func Shutdown() error {
 func startTracer(ctx context.Context, tracerMode int) error {
 	if tracerMode != TracerModeStdout && tracerMode != TracerModeOTLP {
 		if tracerMode != TracerModeDisable {
-			log.Printf("start tracer: unknown trace mode %d", tracerMode)
+			log.Printf("ttrace: unsupported tracer mode %d; installing noop tracing", tracerMode)
 		}
 
 		return installNoopTracing()
@@ -78,7 +78,7 @@ func startTracer(ctx context.Context, tracerMode int) error {
 
 	res, err := newResource()
 	if err != nil {
-		log.Printf("start tracer err (new resource %v).", err)
+		log.Printf("ttrace: build tracing resource: %v", err)
 
 		return err
 	}
@@ -87,7 +87,7 @@ func startTracer(ctx context.Context, tracerMode int) error {
 	maxTracesPerSecond := tcfg.DefaultFloat64(tcfg.LocalKey(TracerMaxTracesPerSec), 1.0)
 	sampler, err := configuredSampler(samplingFraction, maxTracesPerSecond)
 	if err != nil {
-		log.Printf("start tracer err (configure sampler %v).", err)
+		log.Printf("ttrace: configure sampler: %v", err)
 
 		return err
 	}
@@ -97,21 +97,21 @@ func startTracer(ctx context.Context, tracerMode int) error {
 	if tracerMode == TracerModeStdout {
 		tracerExporter, err = newStdoutExporter()
 		if err != nil {
-			log.Printf("start tracer err (new stdout exporter %v).", err)
+			log.Printf("ttrace: create stdout exporter: %v", err)
 
 			return err
 		}
 	} else {
 		otlpEndpoint := strings.TrimSpace(tcfg.DefaultString(tcfg.LocalKey(OTLPEndpoint), ""))
 		if otlpEndpoint == "" {
-			log.Printf("start tracer err (empty OTLP endpoint: set %s).", OTLPEndpoint)
+			log.Printf("ttrace: missing %s for OTLP exporter", OTLPEndpoint)
 
 			return fmt.Errorf("ttrace: missing %s for OTLP exporter", OTLPEndpoint)
 		}
 
 		tracerExporter, err = newTraceExporter(ctx, otlpEndpoint)
 		if err != nil {
-			log.Printf("start tracer OTLP (%s) err (new exporter %v).", otlpEndpoint, err)
+			log.Printf("ttrace: create OTLP exporter for %s: %v", otlpEndpoint, err)
 
 			return err
 		}
