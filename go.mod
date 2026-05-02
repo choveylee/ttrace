@@ -3,7 +3,7 @@ module github.com/choveylee/ttrace
 go 1.25.0
 
 require (
-	github.com/choveylee/tcfg v0.0.0-20260425031243-ed7d89ae6004
+	github.com/choveylee/tcfg v0.0.0-20260502023719-4a5e245b49fd
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.68.0
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.43.0
@@ -16,7 +16,7 @@ require (
 require (
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/choveylee/terror v0.0.0-20260425000752-47a04ab0c1a9 // indirect
+	github.com/choveylee/terror v0.0.0-20260502021137-6588de2883eb // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
