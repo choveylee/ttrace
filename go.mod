@@ -3,7 +3,7 @@ module github.com/choveylee/ttrace
 go 1.25.0
 
 require (
-	github.com/choveylee/tcfg v0.0.0-20260502023719-4a5e245b49fd
+	github.com/choveylee/tcfg v0.0.0-20260502053036-a4c795ccc946
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.68.0
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.43.0
