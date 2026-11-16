@@ -2,16 +2,22 @@ package ttrace
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"math"
+	"net"
+	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/choveylee/tcfg"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/propagation"
@@ -21,25 +27,28 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 )
 
+// Tracing state is configured once during package initialization.
 var (
 	tracerProvider *sdktrace.TracerProvider
+	tracerSampler  sdktrace.Sampler = sdktrace.NeverSample()
 )
 
 // init loads tracing configuration through tcfg, installs an SDK-backed TracerProvider when
 // possible, and falls back to noop tracing if initialization fails.
 func init() {
 	ctx := context.Background()
+	propagator := propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{})
+
+	otel.SetTextMapPropagator(propagator)
 
 	tracerMode := tcfg.DefaultInt(tcfg.LocalKey(TracerMode), TracerModeDisable)
 
 	err := startTracer(ctx, tracerMode)
 	if err != nil {
-		log.Printf("ttrace: tracer initialization failed: %v; falling back to noop tracing", err)
-
-		err = installNoopTracing()
-		if err != nil {
-			log.Printf("ttrace: noop tracing installation failed: %v", err)
-		}
+		log.Printf("ttrace: initialize tracer: %v; falling back to noop tracing", err)
+		tracerProvider = nil
+		tracerSampler = sdktrace.NeverSample()
+		otel.SetTracerProvider(noop.NewTracerProvider())
 	}
 }
 
@@ -49,192 +58,180 @@ func GetTracerProvider() *sdktrace.TracerProvider {
 	return tracerProvider
 }
 
-// Shutdown flushes and shuts down the SDK [sdktrace.TracerProvider] returned by
-// [GetTracerProvider], when present.
+// Shutdown calls [ShutdownContext] with a ten-second deadline for flushing and shutdown.
+// Call ShutdownContext directly when the application's shutdown deadline differs.
 func Shutdown() error {
-	if tracerProvider != nil {
-		err := tracerProvider.Shutdown(context.Background())
-		if err != nil {
-			log.Printf("ttrace: tracer shutdown failed: %v", err)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
-			return err
-		}
+	return ShutdownContext(ctx)
+}
+
+// ShutdownContext flushes and stops the SDK provider using a non-nil context.
+// Disabled tracing returns nil for a live context. A context already canceled leaves the provider running.
+// Once SDK shutdown begins, it is final even if the deadline expires; subsequent SDK shutdown
+// calls do not retry the flush. Custom span processors must honor ctx to bound their shutdown.
+func ShutdownContext(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("ttrace: context must not be nil")
+	}
+
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("ttrace: shut down tracer provider: %w", err)
+	}
+
+	if tracerProvider == nil {
+		return nil
+	}
+
+	if err := tracerProvider.Shutdown(ctx); err != nil {
+		log.Printf("ttrace: shut down tracer provider: %v", err)
+
+		return fmt.Errorf("ttrace: shut down tracer provider: %w", err)
 	}
 
 	return nil
 }
 
 // startTracer constructs the resource, exporter, and sampler, then installs the global
-// TracerProvider for stdout or OTLP/HTTP export. Disabled or unknown modes delegate to
-// [installNoopTracing]. It returns an error when resource, sampler, or exporter construction fails.
+// TracerProvider for stdout or OTLP/HTTP export. Disabled mode installs a noop provider.
+// Invalid modes, sampling settings, and exporter construction failures return errors to init.
 func startTracer(ctx context.Context, tracerMode int) error {
-	if tracerMode != TracerModeStdout && tracerMode != TracerModeOTLP {
-		if tracerMode != TracerModeDisable {
-			log.Printf("ttrace: unsupported tracer mode %d; installing noop tracing", tracerMode)
-		}
+	if tracerMode == TracerModeDisable {
+		tracerSampler = sdktrace.NeverSample()
+		otel.SetTracerProvider(noop.NewTracerProvider())
 
-		return installNoopTracing()
+		return nil
 	}
 
-	res, err := newResource()
-	if err != nil {
-		log.Printf("ttrace: build tracing resource: %v", err)
-
-		return err
+	if tracerMode != TracerModeStdout && tracerMode != TracerModeOTLP {
+		return fmt.Errorf("ttrace: tracer mode must be %d, %d, or %d; got %d", TracerModeDisable, TracerModeStdout, TracerModeOTLP, tracerMode)
 	}
 
 	samplingFraction := tcfg.DefaultFloat64(tcfg.LocalKey(TracerSamplingFraction), 0.1)
 	maxTracesPerSecond := tcfg.DefaultFloat64(tcfg.LocalKey(TracerMaxTracesPerSec), 1.0)
-	sampler, err := configuredSampler(samplingFraction, maxTracesPerSecond)
-	if err != nil {
-		log.Printf("ttrace: configure sampler: %v", err)
+	if math.IsNaN(samplingFraction) || math.IsInf(samplingFraction, 0) || (samplingFraction != -1 && (samplingFraction < 0 || samplingFraction > 1)) {
+		return fmt.Errorf("ttrace: sampling fraction must be -1 or a finite value between 0 and 1; got %g", samplingFraction)
+	}
 
-		return err
+	if math.IsNaN(maxTracesPerSecond) || math.IsInf(maxTracesPerSecond, 0) || (maxTracesPerSecond < 0 && maxTracesPerSecond != -1) {
+		return fmt.Errorf("ttrace: maximum traces per second must be -1 or a finite non-negative value; got %g", maxTracesPerSecond)
+	}
+
+	var sampler sdktrace.Sampler
+
+	// Only configuration accepts -1; public sampler constructors require concrete non-negative values.
+	switch {
+	case samplingFraction == -1 && maxTracesPerSecond == -1:
+		sampler = sdktrace.ParentBased(sdktrace.AlwaysSample())
+	case samplingFraction == -1:
+		sampler = RateLimitingSampler(maxTracesPerSecond)
+	case maxTracesPerSecond == -1:
+		sampler = sdktrace.ParentBased(sdktrace.TraceIDRatioBased(samplingFraction))
+	default:
+		sampler = GuaranteedThroughputProbabilitySampler(samplingFraction, maxTracesPerSecond)
 	}
 
 	var tracerExporter sdktrace.SpanExporter
 
 	if tracerMode == TracerModeStdout {
-		tracerExporter, err = newStdoutExporter()
+		exporter, err := stdouttrace.New(stdouttrace.WithPrettyPrint())
 		if err != nil {
-			log.Printf("ttrace: create stdout exporter: %v", err)
-
-			return err
+			return fmt.Errorf("ttrace: create stdout trace exporter: %w", err)
 		}
+
+		tracerExporter = exporter
 	} else {
 		otlpEndpoint := strings.TrimSpace(tcfg.DefaultString(tcfg.LocalKey(OTLPEndpoint), ""))
 		if otlpEndpoint == "" {
-			log.Printf("ttrace: missing %s for OTLP exporter", OTLPEndpoint)
-
-			return fmt.Errorf("ttrace: missing %s for OTLP exporter", OTLPEndpoint)
+			return errors.New("ttrace: OTLP endpoint must not be empty")
 		}
 
-		tracerExporter, err = newTraceExporter(ctx, otlpEndpoint)
+		if strings.ContainsAny(otlpEndpoint, "/?#@") {
+			return errors.New("ttrace: OTLP endpoint must use host:port format without a scheme, path, query, or credentials")
+		}
+
+		endpointHost, endpointPort, err := net.SplitHostPort(otlpEndpoint)
 		if err != nil {
-			log.Printf("ttrace: create OTLP exporter for %s: %v", otlpEndpoint, err)
-
-			return err
+			return errors.New("ttrace: OTLP endpoint must use host:port format")
 		}
+
+		if endpointHost == "" {
+			return errors.New("ttrace: OTLP endpoint host must not be empty")
+		}
+
+		port, err := strconv.ParseUint(endpointPort, 10, 16)
+		if err != nil || port == 0 {
+			return errors.New("ttrace: OTLP endpoint port must be an integer between 1 and 65535")
+		}
+
+		if strings.HasPrefix(otlpEndpoint, "[") {
+			address, err := netip.ParseAddr(endpointHost)
+			if err != nil || !address.Is6() {
+				return errors.New("ttrace: bracketed OTLP endpoint host must be an IPv6 address")
+			}
+		}
+
+		// Match the exporter's URL construction without exposing the configured address in errors.
+		endpointURL := url.URL{Scheme: "http", Host: otlpEndpoint}
+
+		if _, err := url.ParseRequestURI(endpointURL.String()); err != nil {
+			return errors.New("ttrace: OTLP endpoint host must be a valid hostname or IP address")
+		}
+
+		exporter, err := otlptracehttp.New(ctx, otlptracehttp.WithInsecure(), otlptracehttp.WithEndpoint(otlpEndpoint))
+		if err != nil {
+			return fmt.Errorf("ttrace: create OTLP trace exporter: %w", err)
+		}
+
+		tracerExporter = exporter
 	}
 
+	tracingResource := newResource()
+	tracerSampler = sampler
 	tracerProvider = sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(tracerExporter),
 		sdktrace.WithSampler(sampler),
-		sdktrace.WithResource(res),
+		sdktrace.WithResource(tracingResource),
 	)
 
 	otel.SetTracerProvider(tracerProvider)
-	installPropagator()
 
 	return nil
-}
-
-// configuredSampler interprets -1 as disabling an individual sampling stage. When both values are
-// -1, root sampling is always enabled. Values below -1 are rejected. The returned sampler is
-// parent-based so child spans inherit their parent decision.
-func configuredSampler(samplingFraction, maxTracesPerSecond float64) (sdktrace.Sampler, error) {
-	if err := validateSamplingConfigValue(TracerSamplingFraction, samplingFraction); err != nil {
-		return nil, err
-	}
-
-	if err := validateSamplingConfigValue(TracerMaxTracesPerSec, maxTracesPerSecond); err != nil {
-		return nil, err
-	}
-
-	switch {
-	case samplingFraction == -1 && maxTracesPerSecond == -1:
-		return sdktrace.ParentBased(sdktrace.AlwaysSample()), nil
-	case samplingFraction == -1:
-		return RateLimitingSampler(maxTracesPerSecond), nil
-	case maxTracesPerSecond == -1:
-		return sdktrace.ParentBased(sdktrace.TraceIDRatioBased(samplingFraction)), nil
-	default:
-		return GuaranteedThroughputProbabilitySampler(samplingFraction, maxTracesPerSecond), nil
-	}
-}
-
-func validateSamplingConfigValue(key string, value float64) error {
-	if value < -1 {
-		return fmt.Errorf("ttrace: invalid %s: must be -1 or >= 0 (got %v)", key, value)
-	}
-
-	return nil
-}
-
-// installNoopTracing registers a noop global TracerProvider, clears the SDK provider pointer, and
-// reinstalls propagators so context propagation remains available without exporting spans.
-func installNoopTracing() error {
-	tracerProvider = nil
-
-	otel.SetTracerProvider(noop.NewTracerProvider())
-	installPropagator()
-
-	return nil
-}
-
-// installPropagator installs a global TextMapPropagator composed of W3C Trace Context and W3C
-// Baggage propagators.
-func installPropagator() {
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
 }
 
 // newResource builds a [resource.Resource] containing service.name and optional attributes derived
 // from tcfg keys such as [ServiceVersion] and [DeploymentEnvironmentName].
-func newResource() (*resource.Resource, error) {
-	appName := tcfg.DefaultString(AppName, "")
+func newResource() *resource.Resource {
+	appName := strings.TrimSpace(tcfg.DefaultString(AppName, ""))
 	if appName == "" {
 		basePath := filepath.Base(os.Args[0])
 		appName = strings.TrimSuffix(basePath, filepath.Ext(basePath))
 	}
 
-	attrs := []attribute.KeyValue{
+	attributes := []attribute.KeyValue{
 		semconv.ServiceNameKey.String(appName),
 	}
 
 	version := strings.TrimSpace(tcfg.DefaultString(tcfg.LocalKey(ServiceVersion), ""))
 	if version != "" {
-		attrs = append(attrs, semconv.ServiceVersionKey.String(version))
+		attributes = append(attributes, semconv.ServiceVersionKey.String(version))
 	}
 
 	namespace := strings.TrimSpace(tcfg.DefaultString(tcfg.LocalKey(ServiceNamespace), ""))
 	if namespace != "" {
-		attrs = append(attrs, semconv.ServiceNamespaceKey.String(namespace))
+		attributes = append(attributes, semconv.ServiceNamespaceKey.String(namespace))
 	}
 
 	instanceId := strings.TrimSpace(tcfg.DefaultString(tcfg.LocalKey(ServiceInstanceID), ""))
 	if instanceId != "" {
-		attrs = append(attrs, semconv.ServiceInstanceIDKey.String(instanceId))
+		attributes = append(attributes, semconv.ServiceInstanceIDKey.String(instanceId))
 	}
 
 	environment := strings.TrimSpace(tcfg.DefaultString(tcfg.LocalKey(DeploymentEnvironmentName), ""))
 	if environment != "" {
-		attrs = append(attrs, semconv.DeploymentEnvironmentNameKey.String(environment))
+		attributes = append(attributes, semconv.DeploymentEnvironmentNameKey.String(environment))
 	}
 
-	r := resource.NewWithAttributes(semconv.SchemaURL, attrs...)
-
-	return r, nil
-}
-
-// newTraceExporter creates an OTLP/HTTP trace exporter for endpoint (host:port) using an insecure
-// client configuration.
-func newTraceExporter(ctx context.Context, endpoint string) (*otlptrace.Exporter, error) {
-	client := otlptracehttp.NewClient(
-		otlptracehttp.WithInsecure(),
-		otlptracehttp.WithEndpoint(endpoint),
-	)
-
-	exporter, err := otlptrace.New(ctx, client)
-	if err != nil {
-		return nil, err
-	}
-
-	return exporter, err
-}
-
-// newStdoutExporter constructs a stdout span exporter with pretty-print formatting.
-func newStdoutExporter() (sdktrace.SpanExporter, error) {
-	exporter, err := stdouttrace.New(stdouttrace.WithPrettyPrint())
-
-	return exporter, err
+	return resource.NewWithAttributes(semconv.SchemaURL, attributes...)
 }

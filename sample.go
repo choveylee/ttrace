@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/sdk/trace"
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 // RateLimiter reports whether a given cost may be admitted by a credit-based limiter.
@@ -17,7 +18,7 @@ type RateLimiter interface {
 	CheckCredit(itemCost float64) bool
 }
 
-// ReconfigurableRateLimiter implements a leaky-bucket rate limiter expressed in abstract credits.
+// ReconfigurableRateLimiter implements a token bucket expressed in abstract credits.
 // On each [ReconfigurableRateLimiter.CheckCredit] call, the balance refills in proportion to
 // elapsed time at a rate of creditsPerSecond, up to maxBalance. CheckCredit deducts itemCost when
 // sufficient balance is available and reports whether the deduction succeeded.
@@ -37,106 +38,143 @@ type ReconfigurableRateLimiter struct {
 }
 
 // NewRateLimiter constructs a [ReconfigurableRateLimiter] with the specified refill rate and maximum
-// balance.
+// balance. Invalid (negative, NaN, or infinite) configuration disables the limiter
+// until a valid [ReconfigurableRateLimiter.Update] call. The zero value is disabled.
 func NewRateLimiter(creditsPerSecond, maxBalance float64) *ReconfigurableRateLimiter {
-	return &ReconfigurableRateLimiter{
-		creditsPerSecond: creditsPerSecond,
-		balance:          maxBalance,
-		maxBalance:       maxBalance,
-		lastTick:         time.Now(),
-		timeNow:          time.Now,
+	limiter := &ReconfigurableRateLimiter{
+		lastTick: time.Now(),
+		timeNow:  time.Now,
 	}
+
+	limiter.Update(creditsPerSecond, maxBalance)
+
+	return limiter
 }
 
 // CheckCredit attempts to deduct itemCost from the current balance and reports whether the
-// deduction succeeded.
-func (rl *ReconfigurableRateLimiter) CheckCredit(itemCost float64) bool {
-	rl.lock.Lock()
-	defer rl.lock.Unlock()
+// deduction succeeded. Negative, NaN, or infinite costs are rejected without changing the balance.
+func (limiter *ReconfigurableRateLimiter) CheckCredit(itemCost float64) bool {
+	if math.IsNaN(itemCost) || math.IsInf(itemCost, 0) || itemCost < 0 {
+		return false
+	}
 
-	// if we have enough credits to pay for current item, then reduce balance and allow
-	if rl.balance >= itemCost {
-		rl.balance -= itemCost
+	limiter.lock.Lock()
+	defer limiter.lock.Unlock()
+
+	// Refill before every deduction so idle time cannot be credited twice.
+	limiter.updateBalance()
+	if limiter.balance >= itemCost {
+		limiter.balance -= itemCost
+
 		return true
 	}
-	// otherwise check if balance can be increased due to time elapsed, and try again
-	rl.updateBalance()
-	if rl.balance >= itemCost {
-		rl.balance -= itemCost
-		return true
-	}
+
 	return false
 }
 
-// updateBalance accrues credits based on elapsed time since the last tick. rl.lock must be held.
-func (rl *ReconfigurableRateLimiter) updateBalance() {
-	// calculate how much time passed since the last tick, and update current tick
-	currentTime := rl.timeNow()
-	elapsedTime := currentTime.Sub(rl.lastTick)
-	rl.lastTick = currentTime
-	// calculate how much credit have we accumulated since the last tick
-	rl.balance += elapsedTime.Seconds() * rl.creditsPerSecond
-	if rl.balance > rl.maxBalance {
-		rl.balance = rl.maxBalance
-	}
-}
-
 // Update replaces the refill rate and balance cap, rescaling the current balance to the new maximum.
-func (rl *ReconfigurableRateLimiter) Update(creditsPerSecond, maxBalance float64) {
-	rl.lock.Lock()
-	defer rl.lock.Unlock()
+// Invalid configuration clears the balance and disables the limiter until the next valid update.
+func (limiter *ReconfigurableRateLimiter) Update(creditsPerSecond, maxBalance float64) {
+	limiter.lock.Lock()
+	defer limiter.lock.Unlock()
 
-	rl.updateBalance() // get up to date balance
-	if rl.maxBalance > 0 {
-		rl.balance = rl.balance * maxBalance / rl.maxBalance
-	} else {
-		rl.balance = maxBalance
+	if math.IsNaN(creditsPerSecond) || math.IsInf(creditsPerSecond, 0) || creditsPerSecond < 0 || math.IsNaN(maxBalance) || math.IsInf(maxBalance, 0) || maxBalance < 0 {
+		creditsPerSecond = 0
+		maxBalance = 0
 	}
-	rl.creditsPerSecond = creditsPerSecond
-	rl.maxBalance = maxBalance
+
+	limiter.updateBalance()
+	// Keep an unchanged capacity exact; repeated rescaling can otherwise lose fractional credit.
+	if limiter.maxBalance != maxBalance {
+		if limiter.maxBalance > 0 {
+			// Divide first to avoid overflowing when both balance caps are large but finite.
+			limiter.balance = limiter.balance / limiter.maxBalance * maxBalance
+		} else {
+			limiter.balance = maxBalance
+		}
+	}
+
+	limiter.creditsPerSecond = creditsPerSecond
+	limiter.maxBalance = maxBalance
 }
 
-// rateLimitingSampler enforces a maximum number of root-trace sampling decisions per second by
-// using a [ReconfigurableRateLimiter].
+// RateLimitingSampler returns a parent-based [trace.Sampler] that limits sampled root traces to
+// approximately maxTracesPerSecond per second. Zero or invalid rates drop all root traces;
+// valid parent sampling decisions are still inherited.
+func RateLimitingSampler(maxTracesPerSecond float64) trace.Sampler {
+	return trace.ParentBased(newRateLimitingRootSampler(maxTracesPerSecond))
+}
+
+// GuaranteedThroughputProbabilitySampler returns a parent-based [trace.Sampler] that first applies
+// [trace.TraceIDRatioBased] to root traces and then enforces a throughput cap. Invalid fractions
+// outside [0, 1], invalid rates, and zero rates drop root traces without affecting valid parents.
+func GuaranteedThroughputProbabilitySampler(fraction, maxTracesPerSecond float64) trace.Sampler {
+	if math.IsNaN(fraction) || math.IsInf(fraction, 0) || fraction < 0 || fraction > 1 {
+		return trace.ParentBased(trace.NeverSample())
+	}
+
+	rootSampler := &guaranteedThroughputProbabilitySampler{
+		probabilitySampler:  trace.TraceIDRatioBased(fraction),
+		rateLimitingSampler: newRateLimitingRootSampler(maxTracesPerSecond),
+	}
+
+	return trace.ParentBased(rootSampler)
+}
+
+// updateBalance accrues credits up to the capacity. limiter.lock must be held.
+func (limiter *ReconfigurableRateLimiter) updateBalance() {
+	currentTime := time.Now()
+	if limiter.timeNow != nil {
+		currentTime = limiter.timeNow()
+	}
+
+	if !currentTime.After(limiter.lastTick) {
+		return
+	}
+
+	elapsedTime := currentTime.Sub(limiter.lastTick)
+	limiter.lastTick = currentTime
+	limiter.balance = math.Min(limiter.maxBalance, limiter.balance+elapsedTime.Seconds()*limiter.creditsPerSecond)
+}
+
+// rateLimitingSampler limits root sampling with a refill rate and burst capacity through
+// [ReconfigurableRateLimiter].
 type rateLimitingSampler struct {
 	maxTracesPerSecond float64
 	rateLimiter        *ReconfigurableRateLimiter
 }
 
-// init ensures the internal limiter matches maxTracesPerSecond and updates s.maxTracesPerSecond.
-func (s *rateLimitingSampler) init(maxTracesPerSecond float64) *rateLimitingSampler {
-	if s.rateLimiter == nil {
-		s.rateLimiter = NewRateLimiter(maxTracesPerSecond, math.Max(maxTracesPerSecond, 1.0))
-	} else {
-		s.rateLimiter.Update(maxTracesPerSecond, math.Max(maxTracesPerSecond, 1.0))
-	}
-	s.maxTracesPerSecond = maxTracesPerSecond
-	return s
-}
-
 // Description returns a concise label describing the sampler configuration.
-func (s *rateLimitingSampler) Description() string {
-	return fmt.Sprintf("rateLimitingSampler(maxTracesPerSecond=%v)", s.maxTracesPerSecond)
+func (sampler *rateLimitingSampler) Description() string {
+	return fmt.Sprintf("rateLimitingSampler(maxTracesPerSecond=%v)", sampler.maxTracesPerSecond)
 }
 
 // ShouldSample returns RecordAndSample when the rate limiter grants one credit for this decision, otherwise Drop.
-func (s *rateLimitingSampler) ShouldSample(p trace.SamplingParameters) trace.SamplingResult {
-	if s.rateLimiter.CheckCredit(1.0) {
-		return trace.SamplingResult{Decision: trace.RecordAndSample}
+func (sampler *rateLimitingSampler) ShouldSample(parameters trace.SamplingParameters) trace.SamplingResult {
+	samplingResult := trace.SamplingResult{
+		Decision:   trace.Drop,
+		Tracestate: oteltrace.SpanContextFromContext(parameters.ParentContext).TraceState(),
 	}
-	return trace.SamplingResult{Decision: trace.Drop}
+
+	if sampler.rateLimiter.CheckCredit(1.0) {
+		samplingResult.Decision = trace.RecordAndSample
+	}
+
+	return samplingResult
 }
 
-// newRateLimitingRootSampler returns the root sampler that enforces the per-second rate limit.
+// newRateLimitingRootSampler creates a shared root policy, disabling invalid or zero rates.
 func newRateLimitingRootSampler(maxTracesPerSecond float64) trace.Sampler {
-	s := new(rateLimitingSampler)
-	return s.init(maxTracesPerSecond)
-}
+	if math.IsNaN(maxTracesPerSecond) || math.IsInf(maxTracesPerSecond, 0) || maxTracesPerSecond <= 0 {
+		return trace.NeverSample()
+	}
 
-// RateLimitingSampler returns a parent-based [trace.Sampler] that limits sampled root traces to
-// approximately maxTracesPerSecond per second.
-func RateLimitingSampler(maxTracesPerSecond float64) trace.Sampler {
-	return trace.ParentBased(newRateLimitingRootSampler(maxTracesPerSecond))
+	rootSampler := &rateLimitingSampler{
+		maxTracesPerSecond: maxTracesPerSecond,
+		rateLimiter:        NewRateLimiter(maxTracesPerSecond, math.Max(maxTracesPerSecond, 1.0)),
+	}
+
+	return rootSampler
 }
 
 // guaranteedThroughputProbabilitySampler applies trace ID ratio sampling, then a per-second rate limit.
@@ -145,34 +183,20 @@ type guaranteedThroughputProbabilitySampler struct {
 	rateLimitingSampler trace.Sampler
 }
 
-// newGuaranteedThroughputProbabilityRootSampler returns the root sampler that applies ratio sampling
-// before the per-second throughput cap.
-func newGuaranteedThroughputProbabilityRootSampler(fraction float64, maxTracesPerSecond float64) trace.Sampler {
-	return &guaranteedThroughputProbabilitySampler{
-		probabilitySampler:  trace.TraceIDRatioBased(fraction),
-		rateLimitingSampler: newRateLimitingRootSampler(maxTracesPerSecond),
-	}
-}
-
-// GuaranteedThroughputProbabilitySampler returns a parent-based [trace.Sampler] that first applies
-// [trace.TraceIDRatioBased] to root traces and then enforces a throughput cap of approximately
-// maxTracesPerSecond sampled root traces per second.
-func GuaranteedThroughputProbabilitySampler(fraction float64, maxTracesPerSecond float64) trace.Sampler {
-	return trace.ParentBased(newGuaranteedThroughputProbabilityRootSampler(fraction, maxTracesPerSecond))
-}
-
 // ShouldSample returns the probability sampler result when that stage drops the span; otherwise it
-// delegates to the rate-limiting sampler.
-func (s guaranteedThroughputProbabilitySampler) ShouldSample(p trace.SamplingParameters) trace.SamplingResult {
-	samplingResult := s.probabilitySampler.ShouldSample(p)
+// delegates to the rate limiter while preserving sampling attributes and tracestate.
+func (sampler guaranteedThroughputProbabilitySampler) ShouldSample(parameters trace.SamplingParameters) trace.SamplingResult {
+	samplingResult := sampler.probabilitySampler.ShouldSample(parameters)
 	if samplingResult.Decision == trace.Drop {
 		return samplingResult
 	}
 
-	return s.rateLimitingSampler.ShouldSample(p)
+	samplingResult.Decision = sampler.rateLimitingSampler.ShouldSample(parameters).Decision
+
+	return samplingResult
 }
 
 // Description returns the constant string "GuaranteedThroughputProbabilitySampler".
-func (s guaranteedThroughputProbabilitySampler) Description() string {
+func (sampler guaranteedThroughputProbabilitySampler) Description() string {
 	return "GuaranteedThroughputProbabilitySampler"
 }
