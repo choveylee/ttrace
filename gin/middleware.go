@@ -1,14 +1,33 @@
 package gin
 
 import (
+	"net"
+	"strconv"
+	"strings"
+
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 )
 
-// Middleware returns a [gin.HandlerFunc] that extracts incoming trace context and records server
-// spans. Install a global TracerProvider and TextMapPropagator before creating the middleware.
-// serverName supplies the HTTP server address attribute; an empty value uses the request Host.
-// Configure service.name on the provider's resource.
+// Middleware records server spans using the configured server address.
+// Missing names become "unknown"; missing or invalid ports are omitted from telemetry.
+// Provider and propagator initialization remain the application's responsibility.
+// A concrete port prevents otelgin from falling back to the untrusted request Host.
 func Middleware(serverName string) gin.HandlerFunc {
-	return otelgin.Middleware(serverName)
+	serverName = strings.TrimSpace(serverName)
+	host, port, err := net.SplitHostPort(serverName)
+	if err != nil {
+		host = strings.Trim(serverName, "[]")
+		port = "0"
+	}
+
+	if host == "" {
+		host = "unknown"
+	}
+
+	if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+		port = "0"
+	}
+
+	return otelgin.Middleware(net.JoinHostPort(host, port))
 }

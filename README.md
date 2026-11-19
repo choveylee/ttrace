@@ -129,7 +129,7 @@ router.Use(ttracegin.Middleware(""))
 Applications that initialize OpenTelemetry themselves may use the Gin submodule independently:
 install their own global `TracerProvider` and a `TextMapPropagator` with W3C Trace Context and
 Baggage before creating middleware, and shut down their provider on exit. The middleware's
-`serverName` argument sets the HTTP server address attribute; `""` uses the request Host. Set
+`serverName` argument sets the HTTP server address attribute; `""` uses `unknown`. An omitted port is excluded from telemetry. Set
 `service.name` on the provider resource (`APP_NAME` when using the core module). Avoid calling
 `ExtractHTTP` again for the same request unless duplicate processing is intentional.
 
@@ -161,3 +161,5 @@ GOWORK=off go vet ./...
 
 In a multi-module checkout, also use `go build ./... ./gin/...` and `go vet ./... ./gin/...`
 to verify the repository workspace.
+
+Gin middleware uses the configured server address for telemetry. An empty name becomes `unknown`, and an omitted or invalid port is excluded from telemetry. Supply `server.example:8080` to record a concrete endpoint. Request Host values remain available to application handlers.
